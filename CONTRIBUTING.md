@@ -5,7 +5,7 @@ Thanks for your interest in contributing! Here's how to get started.
 ## Development Setup
 
 ```bash
-git clone https://github.com/h1n054ur/hookforms.git
+git clone https://github.com/bts-io/hookforms.git
 cd hookforms
 cp .env.example .env
 # Edit .env with your own values

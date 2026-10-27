@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://hookforms-docs.h1n054ur.dev">Docs</a> &middot;
-  <a href="https://github.com/h1n054ur/hookforms-cloud">Cloudflare Workers Version</a> &middot;
+  <a href="https://github.com/bts-io/hookforms-cloud">Cloudflare Workers Version</a> &middot;
   <a href="https://hookforms-docs.h1n054ur.dev/getting-started/self-hosted/">Quick Start Guide</a>
 </p>
 
@@ -19,9 +19,9 @@
 HTML Form  -->  POST /hooks/your-inbox  -->  Discord, Slack, Email, Telegram, ...
 ```
 
-> **Want serverless instead?** Check out [hookforms-cloud](https://github.com/h1n054ur/hookforms-cloud) — runs entirely on Cloudflare Workers (D1, KV, Queues). No Docker or VPS needed.
+> **Want serverless instead?** Check out [hookforms-cloud](https://github.com/bts-io/hookforms-cloud). It runs entirely on Cloudflare Workers (D1, KV, Queues). No Docker or VPS needed.
 >
-> [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/h1n054ur/hookforms-cloud)
+> [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/bts-io/hookforms-cloud)
 
 ## Features
 
@@ -40,7 +40,7 @@ HTML Form  -->  POST /hooks/your-inbox  -->  Discord, Slack, Email, Telegram, ..
 ## Quick Start
 
 ```bash
-git clone https://github.com/h1n054ur/hookforms.git
+git clone https://github.com/bts-io/hookforms.git
 cd hookforms
 
 # Configure

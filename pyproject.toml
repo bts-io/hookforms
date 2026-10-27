@@ -20,9 +20,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/h1n054ur/hookforms"
-Repository = "https://github.com/h1n054ur/hookforms"
-Issues = "https://github.com/h1n054ur/hookforms/issues"
+Homepage = "https://github.com/bts-io/hookforms"
+Repository = "https://github.com/bts-io/hookforms"
+Issues = "https://github.com/bts-io/hookforms/issues"
 
 [build-system]
 requires = ["hatchling"]
