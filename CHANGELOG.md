@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Notification emails for a submission set `Reply-To` to the submitter when the submission has a valid `email` field (with the `name` field as the display name), so replying in a mail client answers the person who filled in the form. This covers the legacy `notify_email` field and email channels on every provider (Gmail, Resend, SendGrid and SMTP).
+
 ## 0.2.0
 
 HookForms is rewritten in Rust. It now runs as one container with a SQLite database, in place of the API, worker, Postgres and Redis containers of 0.1. The HTTP API stays the same.

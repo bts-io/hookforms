@@ -27,6 +27,48 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 /// google-auth refreshes a token this long before it expires.
 const REFRESH_THRESHOLD_SECS: i64 = 225;
 
+/// Where replies to an email go (the Reply-To header): an address and, when
+/// known, a display name. Form notifications use the submitter's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyTo {
+    pub address: String,
+    pub name: Option<String>,
+}
+
+impl ReplyTo {
+    /// The same Reply-To with control characters removed from both parts, or
+    /// `None` when no address is left.
+    fn cleaned(&self) -> Option<ReplyTo> {
+        let address = clean_address(&self.address);
+        let name = self
+            .name
+            .as_deref()
+            .map(clean_header)
+            .filter(|n| !n.is_empty());
+        (!address.is_empty()).then_some(ReplyTo { address, name })
+    }
+
+    /// `Name <address>` for an API that parses the mailbox itself: the name
+    /// loses the characters that would end it early and is quoted when it
+    /// holds other specials (a comma would split it into two addresses).
+    fn mailbox(&self) -> String {
+        let Some(name) = self
+            .name
+            .as_deref()
+            .map(|n| n.replace(['<', '>', '"'], ""))
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+        else {
+            return self.address.clone();
+        };
+        if name.contains(['(', ')', '[', ']', ':', ';', '@', '\\', ',', '.']) {
+            format!("\"{}\" <{}>", name.replace('\\', "\\\\"), self.address)
+        } else {
+            format!("{name} <{}>", self.address)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Provider {
     Gmail(GmailProvider),
@@ -59,6 +101,9 @@ impl Provider {
         }
     }
 
+    /// Send one email. `reply_to`, when set, becomes the Reply-To header
+    /// (form notifications: the submitter); the sender stays the provider's.
+    #[allow(clippy::too_many_arguments)]
     pub async fn send(
         &self,
         http: &reqwest::Client,
@@ -67,6 +112,7 @@ impl Provider {
         html: &str,
         text: &str,
         sender_name: Option<&str>,
+        reply_to: Option<&ReplyTo>,
     ) -> Result<(), String> {
         let display = match sender_name {
             Some(n) if !n.is_empty() => clean_header(n),
@@ -76,17 +122,32 @@ impl Provider {
         // other control characters in a header value.
         let subject = clean_header(subject);
         let to = clean_address(to);
-        let (to, subject, display) = (to.as_str(), subject.as_str(), display.as_str());
+        let reply_to = reply_to.and_then(ReplyTo::cleaned);
+        let msg = Outgoing {
+            to: &to,
+            subject: &subject,
+            html,
+            text,
+            display: &display,
+            reply_to: reply_to.as_ref(),
+        };
         match self {
-            Provider::Gmail(p) => p.send(http, to, subject, html, text, display).await,
-            Provider::Resend(p) => p.send_resend(http, to, subject, html, text, display).await,
-            Provider::SendGrid(p) => {
-                p.send_sendgrid(http, to, subject, html, text, display)
-                    .await
-            }
-            Provider::Smtp(p) => p.send(to, subject, html, text, display).await,
+            Provider::Gmail(p) => p.send(http, &msg).await,
+            Provider::Resend(p) => p.send_resend(http, &msg).await,
+            Provider::SendGrid(p) => p.send_sendgrid(http, &msg).await,
+            Provider::Smtp(p) => p.send(&msg).await,
         }
     }
+}
+
+/// One cleaned email on its way to a provider.
+struct Outgoing<'a> {
+    to: &'a str,
+    subject: &'a str,
+    html: &'a str,
+    text: &'a str,
+    display: &'a str,
+    reply_to: Option<&'a ReplyTo>,
 }
 
 /// The real API base, unless the test-only upstream override is set.
@@ -141,28 +202,30 @@ fn opt_str(config: &Map<String, Value>, key: &str) -> String {
 
 /// One `multipart/alternative` message: the plain-text part first, then the
 /// HTML part, so clients that show HTML pick the last one they understand.
-fn build_message(
-    from: &str,
-    display: &str,
-    to: &str,
-    subject: &str,
-    html: &str,
-    text: &str,
-) -> Result<Message, String> {
+fn build_message(from: &str, msg: &Outgoing<'_>) -> Result<Message, String> {
     let from_addr = from
         .parse()
         .map_err(|e| format!("invalid sender address {from:?}: {e}"))?;
-    let to_box: Mailbox = to
+    let to_box: Mailbox = msg
+        .to
         .parse()
-        .map_err(|e| format!("invalid recipient address {to:?}: {e}"))?;
-    Message::builder()
-        .from(Mailbox::new(Some(display.to_string()), from_addr))
-        .to(to_box)
-        .subject(subject)
+        .map_err(|e| format!("invalid recipient address {:?}: {e}", msg.to))?;
+    let mut builder = Message::builder()
+        .from(Mailbox::new(Some(msg.display.to_string()), from_addr))
+        .to(to_box);
+    if let Some(reply) = msg.reply_to {
+        // An address lettre cannot parse leaves the Reply-To out; the email still goes.
+        match reply.address.parse() {
+            Ok(addr) => builder = builder.reply_to(Mailbox::new(reply.name.clone(), addr)),
+            Err(e) => tracing::warn!(error = %e, "Reply-To address left out"),
+        }
+    }
+    builder
+        .subject(msg.subject)
         .multipart(
             MultiPart::alternative()
-                .singlepart(part(ContentType::TEXT_PLAIN, text))
-                .singlepart(part(ContentType::TEXT_HTML, html)),
+                .singlepart(part(ContentType::TEXT_PLAIN, msg.text))
+                .singlepart(part(ContentType::TEXT_HTML, msg.html)),
         )
         .map_err(|e| format!("cannot build message: {e}"))
 }
@@ -224,22 +287,18 @@ impl ApiProvider {
         Ok(())
     }
 
-    async fn send_resend(
-        &self,
-        http: &reqwest::Client,
-        to: &str,
-        subject: &str,
-        html: &str,
-        text: &str,
-        display: &str,
-    ) -> Result<(), String> {
-        let payload = serde_json::json!({
-            "from": format!("{display} <{}>", self.from_email),
+    async fn send_resend(&self, http: &reqwest::Client, msg: &Outgoing<'_>) -> Result<(), String> {
+        let (to, subject) = (msg.to, msg.subject);
+        let mut payload = serde_json::json!({
+            "from": format!("{} <{}>", msg.display, self.from_email),
             "to": [to],
             "subject": subject,
-            "html": html,
-            "text": text,
+            "html": msg.html,
+            "text": msg.text,
         });
+        if let Some(reply) = msg.reply_to {
+            payload["reply_to"] = Value::String(reply.mailbox());
+        }
         self.post(http, "/emails", payload, "Resend").await?;
         tracing::info!(to, subject, "Email sent via Resend");
         Ok(())
@@ -248,22 +307,26 @@ impl ApiProvider {
     async fn send_sendgrid(
         &self,
         http: &reqwest::Client,
-        to: &str,
-        subject: &str,
-        html: &str,
-        text: &str,
-        display: &str,
+        msg: &Outgoing<'_>,
     ) -> Result<(), String> {
+        let (to, subject) = (msg.to, msg.subject);
         // SendGrid wants text/plain first when both are given.
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "personalizations": [{"to": [{"email": to}]}],
-            "from": {"email": self.from_email, "name": display},
+            "from": {"email": self.from_email, "name": msg.display},
             "subject": subject,
             "content": [
-                {"type": "text/plain", "value": text},
-                {"type": "text/html", "value": html},
+                {"type": "text/plain", "value": msg.text},
+                {"type": "text/html", "value": msg.html},
             ],
         });
+        if let Some(reply) = msg.reply_to {
+            let mut field = serde_json::json!({"email": reply.address});
+            if let Some(name) = &reply.name {
+                field["name"] = Value::String(name.clone());
+            }
+            payload["reply_to"] = field;
+        }
         self.post(http, "/v3/mail/send", payload, "SendGrid")
             .await?;
         tracing::info!(to, subject, "Email sent via SendGrid");
@@ -303,15 +366,9 @@ impl SmtpProvider {
         })
     }
 
-    async fn send(
-        &self,
-        to: &str,
-        subject: &str,
-        html: &str,
-        text: &str,
-        display: &str,
-    ) -> Result<(), String> {
-        let message = build_message(&self.from_email, display, to, subject, html, text)?;
+    async fn send(&self, msg: &Outgoing<'_>) -> Result<(), String> {
+        let (to, subject) = (msg.to, msg.subject);
+        let message = build_message(&self.from_email, msg)?;
         let mut builder = if self.use_tls {
             // Python: plain connect, then STARTTLS, then login.
             AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&self.host)
@@ -501,15 +558,8 @@ impl GmailProvider {
         Ok(())
     }
 
-    async fn send(
-        &self,
-        http: &reqwest::Client,
-        to: &str,
-        subject: &str,
-        html: &str,
-        text: &str,
-        display: &str,
-    ) -> Result<(), String> {
+    async fn send(&self, http: &reqwest::Client, msg: &Outgoing<'_>) -> Result<(), String> {
+        let (to, subject) = (msg.to, msg.subject);
         let mut token = self.read_token_file()?;
         let has_refresh = token
             .get("refresh_token")
@@ -531,7 +581,7 @@ impl GmailProvider {
             return Err("Gmail credentials are invalid. Re-run gmail_auth.py.".into());
         }
 
-        let message = build_message(&self.sender_email, display, to, subject, html, text)?;
+        let message = build_message(&self.sender_email, msg)?;
         let raw = base64::engine::general_purpose::URL_SAFE.encode(message.formatted());
         let url = format!("{}/gmail/v1/users/me/messages/send", self.api_base);
         let payload = serde_json::json!({ "raw": raw });

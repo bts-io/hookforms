@@ -13,6 +13,7 @@ use serde_json::{Map, Value};
 
 use super::ChannelContext;
 use super::pyfmt::py_str;
+use crate::email::providers::ReplyTo;
 use crate::state::AppState;
 
 pub const EMAIL_RATE_LIMIT: u64 = 10;
@@ -21,7 +22,8 @@ pub const EMAIL_RATE_WINDOW: Duration = Duration::from_secs(600);
 pub type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
 /// What the channel dispatcher needs from an email provider: send one email,
-/// HTML plus its plain-text twin, to one recipient.
+/// HTML plus its plain-text twin, to one recipient, with the submitter as
+/// Reply-To when the submission names a valid address.
 pub trait ChannelMailer: Send + Sync {
     fn provider_type(&self) -> &str;
     fn send_email<'a>(
@@ -31,6 +33,7 @@ pub trait ChannelMailer: Send + Sync {
         html: &'a str,
         text: &'a str,
         sender_name: &'a str,
+        reply_to: Option<&'a ReplyTo>,
     ) -> SendFuture<'a>;
 }
 
@@ -70,11 +73,17 @@ impl ChannelMailer for ProviderMailer {
         html: &'a str,
         text: &'a str,
         sender_name: &'a str,
+        reply_to: Option<&'a ReplyTo>,
     ) -> SendFuture<'a> {
-        Box::pin(
-            self.provider
-                .send(&self.http, to, subject, html, text, Some(sender_name)),
-        )
+        Box::pin(self.provider.send(
+            &self.http,
+            to,
+            subject,
+            html,
+            text,
+            Some(sender_name),
+            reply_to,
+        ))
     }
 }
 
@@ -122,6 +131,8 @@ pub async fn send_emails(
         return 0;
     }
     let email = render(ctx);
+    // Replying to the notification answers the submitter (their own `email` field).
+    let reply_to = crate::email::render::submitter_reply_to(&ctx.body);
     let sends = recipients.iter().map(|to| {
         mailer.send_email(
             to,
@@ -129,6 +140,7 @@ pub async fn send_emails(
             &email.html,
             &email.text,
             &ctx.sender_name,
+            reply_to.as_ref(),
         )
     });
     let mut ok = 0;

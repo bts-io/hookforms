@@ -223,6 +223,8 @@ pub async fn deliver_legacy(state: &AppState, inbox: &InboxInfo, body: &Value) -
     };
     let rendered =
         render::render_legacy(&inbox.slug, inbox.email_subject_prefix.as_deref(), fields);
+    // Replying to the notification answers the submitter (their own `email` field).
+    let reply_to = render::submitter_reply_to(fields);
     let provider = match resolve_provider(state, &inbox.id).await {
         Ok(Some(p)) => p,
         Ok(None) => {
@@ -249,6 +251,7 @@ pub async fn deliver_legacy(state: &AppState, inbox: &InboxInfo, body: &Value) -
                 &rendered.html,
                 &rendered.text,
                 inbox.sender_name.as_deref(),
+                reply_to.as_ref(),
             )
             .await
         {

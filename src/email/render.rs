@@ -9,6 +9,7 @@
 
 use serde_json::{Map, Value};
 
+use super::providers::{ReplyTo, clean_address, clean_header};
 use crate::channels::format_value::DEFAULT_MAX_LEN;
 /// One copy of each formatting helper, shared with the channel code.
 pub use crate::channels::format_value::format_value;
@@ -56,6 +57,29 @@ fn field(body: &Map<String, Value>, key: &str) -> Option<String> {
 /// A reply address worth a `mailto:` link: one token with an `@` in it.
 fn reply_address(body: &Map<String, Value>) -> Option<String> {
     field(body, "email").filter(|e| e.contains('@') && !e.chars().any(char::is_whitespace))
+}
+
+/// The Reply-To for a notification: the submission's `email` field (the one
+/// the "Reply to" button uses), named by its `name` field, so replying in a
+/// mail client answers the submitter. Both are cleaned of CR/LF and other
+/// control characters. `None` unless the address is a plain mailbox address
+/// with a dotted domain. Never used as the sender.
+pub fn submitter_reply_to(body: &Map<String, Value>) -> Option<ReplyTo> {
+    let Some(Value::String(raw)) = body.get("email") else {
+        return None;
+    };
+    let address = clean_address(raw);
+    let valid = address.len() <= 254
+        && address
+            .parse::<lettre::Address>()
+            .is_ok_and(|a| a.domain().contains('.') && !a.domain().starts_with('['));
+    if !valid {
+        return None;
+    }
+    let name = field(body, "name")
+        .map(|n| clean_header(&n))
+        .filter(|n| !n.is_empty());
+    Some(ReplyTo { address, name })
 }
 
 /// Build the notification email for a submission. `subject` is final (the
@@ -321,6 +345,45 @@ mod tests {
         assert!(r.html.contains("/hooks/s&lt;l&gt;ug"));
         assert!(r.html.contains(">X&lt;Y</td>"));
         assert!(r.html.contains("&#x27;quoted&#x27;"));
+    }
+
+    #[test]
+    fn reply_to_is_the_submitter() {
+        let reply = |v: Value| submitter_reply_to(v.as_object().unwrap());
+        assert_eq!(
+            reply(json!({"name": "Ada", "email": "ada@example.com"})),
+            Some(ReplyTo {
+                address: "ada@example.com".into(),
+                name: Some("Ada".into()),
+            })
+        );
+        assert_eq!(
+            reply(json!({"email": "ada@example.com"})),
+            Some(ReplyTo {
+                address: "ada@example.com".into(),
+                name: None,
+            })
+        );
+        // CR/LF cannot carry a second header in the address or the name.
+        assert_eq!(
+            reply(json!({"name": "Ada\r\nBcc: x", "email": "ada@example.com\r\nBcc: x"})),
+            Some(ReplyTo {
+                address: "ada@example.com".into(),
+                name: Some("Ada Bcc: x".into()),
+            })
+        );
+        // No valid address, no Reply-To.
+        for bad in [
+            json!({}),
+            json!({"email": ""}),
+            json!({"email": "not an address"}),
+            json!({"email": "ada@localhost"}),
+            json!({"email": "<ada@example.com>"}),
+            json!({"email": ["ada@example.com"]}),
+            json!({"email": 5}),
+        ] {
+            assert_eq!(reply(bad.clone()), None, "{bad}");
+        }
     }
 
     #[test]

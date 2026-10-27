@@ -11,6 +11,7 @@ use axum::http::{HeaderMap, Request, StatusCode, Uri};
 use hookforms::channels::email::{ChannelMailer, SendFuture};
 use hookforms::channels::{self, ChannelRow, DispatchReport, InboxInfo};
 use hookforms::config::Config;
+use hookforms::email::providers::ReplyTo;
 use hookforms::{AppState, db};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -535,6 +536,7 @@ struct Sent {
     html: String,
     text: String,
     sender: String,
+    reply_to: Option<ReplyTo>,
 }
 
 struct MockMailer(Mutex<Vec<Sent>>);
@@ -550,6 +552,7 @@ impl ChannelMailer for MockMailer {
         html: &'a str,
         text: &'a str,
         sender: &'a str,
+        reply_to: Option<&'a ReplyTo>,
     ) -> SendFuture<'a> {
         Box::pin(async move {
             if to.starts_with("bad") {
@@ -561,6 +564,7 @@ impl ChannelMailer for MockMailer {
                 html: html.into(),
                 text: text.into(),
                 sender: sender.into(),
+                reply_to: reply_to.cloned(),
             });
             Ok(())
         })
@@ -612,6 +616,14 @@ async fn email_channels_use_provider_and_rate_limit() {
         assert_eq!(to, ["a@x.io", "c@x.io", "d@x.io"]);
         assert_eq!(sent[0].subject, "[contact] from Ada");
         assert_eq!(sent[0].sender, "Acme");
+        // Replying to the notification answers the submitter.
+        assert_eq!(
+            sent[0].reply_to,
+            Some(ReplyTo {
+                address: "ada@example.com".into(),
+                name: Some("Ada".into()),
+            })
+        );
         // Every send carries the designed HTML and its plain-text twin.
         assert!(sent[0].html.contains("Reply to Ada</a>"));
         assert!(sent[0].html.contains("<title>[contact] from Ada</title>"));

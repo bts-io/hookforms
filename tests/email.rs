@@ -10,7 +10,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, Request, StatusCode, Uri};
 use axum::routing::post;
 use hookforms::config::Config;
-use hookforms::email::providers::{ApiProvider, GmailProvider, Provider};
+use hookforms::email::providers::{ApiProvider, GmailProvider, Provider, ReplyTo};
 use hookforms::email::{self, InboxInfo};
 use hookforms::{AppState, db};
 use http_body_util::BodyExt;
@@ -396,6 +396,7 @@ async fn resend_request_shape() {
         "<b>x</b>",
         "x",
         Some("Acme"),
+        None,
     )
     .await
     .unwrap();
@@ -419,6 +420,7 @@ async fn resend_request_shape() {
             "h",
             "t",
             None,
+            None,
         )
         .await
         .unwrap_err();
@@ -441,6 +443,7 @@ async fn sendgrid_request_shape() {
         "Subj",
         "<p>h</p>",
         "h",
+        None,
         None,
     )
     .await
@@ -482,6 +485,7 @@ async fn api_providers_strip_control_characters_from_header_fields() {
             "<b>x</b>",
             "x",
             Some(evil),
+            None,
         )
         .await
         .unwrap();
@@ -504,6 +508,7 @@ async fn api_providers_strip_control_characters_from_header_fields() {
             "<p>h</p>",
             "h",
             Some(evil),
+            None,
         )
         .await
         .unwrap();
@@ -621,6 +626,7 @@ async fn gmail_refreshes_expired_token_and_sends() {
         "<p>Hi</p>",
         "Hi there",
         Some("Acme"),
+        None,
     )
     .await
     .unwrap();
@@ -667,6 +673,7 @@ async fn gmail_refreshes_expired_token_and_sends() {
         "x",
         "x",
         None,
+        None,
     )
     .await
     .unwrap();
@@ -698,6 +705,7 @@ async fn gmail_missing_token_file() {
             "S",
             "h",
             "t",
+            None,
             None,
         )
         .await
@@ -811,6 +819,7 @@ async fn smtp_plain_with_login() {
         "<p>Body</p>",
         "Body",
         Some("Acme"),
+        None,
     )
     .await
     .unwrap();
@@ -854,6 +863,7 @@ async fn smtp_non_ascii_parts_round_trip() {
         html,
         text,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -888,6 +898,7 @@ async fn smtp_sends_rendered_notification_as_alternative() {
         &r.html,
         &r.text,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -920,6 +931,7 @@ async fn smtp_tls_refuses_server_without_starttls() {
             "S",
             "h",
             "t",
+            None,
             None,
         )
         .await
@@ -984,6 +996,188 @@ async fn legacy_notify_sends_rate_limits_and_skips_channel_inboxes() {
         ..Default::default()
     };
     assert_eq!(email::deliver_legacy(&state, &info2, &body).await, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Reply-To: replying to a notification answers the submitter
+// ---------------------------------------------------------------------------
+
+fn ada() -> ReplyTo {
+    ReplyTo {
+        address: "ada@example.com".into(),
+        name: Some("Ada Lovelace".into()),
+    }
+}
+
+/// A Reply-To whose address and name try to add a header.
+fn dirty() -> ReplyTo {
+    ReplyTo {
+        address: "ada@example.com\r\nBcc: victim@example.com".into(),
+        name: Some("Ada\r\nBcc: victim@example.com".into()),
+    }
+}
+
+#[tokio::test]
+async fn api_providers_send_reply_to() {
+    let (base, mock) = mock_server().await;
+    let api = |base: &str| ApiProvider {
+        api_key: "k".into(),
+        from_email: "noreply@example.com".into(),
+        api_base: base.to_string(),
+    };
+    let http = reqwest::Client::new();
+    let resend = Provider::Resend(api(&base));
+    let sendgrid = Provider::SendGrid(api(&base));
+    let comma = ReplyTo {
+        address: "ada@example.com".into(),
+        name: Some("Lovelace, Ada".into()),
+    };
+    for (p, reply) in [
+        (&resend, &ada()),
+        (&resend, &dirty()),
+        (&resend, &comma),
+        (&sendgrid, &ada()),
+        (&sendgrid, &dirty()),
+    ] {
+        p.send(&http, "to@example.com", "S", "h", "t", None, Some(reply))
+            .await
+            .unwrap();
+    }
+    let seen = mock.seen.lock().unwrap().clone();
+    let body = |i: usize| serde_json::from_str::<Value>(&seen[i].body).unwrap();
+    assert_eq!(body(0)["reply_to"], "Ada Lovelace <ada@example.com>");
+    assert_eq!(
+        body(1)["reply_to"],
+        "\"Ada Bcc: victim@example.com\" <ada@example.com>"
+    );
+    assert_eq!(body(2)["reply_to"], "\"Lovelace, Ada\" <ada@example.com>");
+    assert_eq!(
+        body(3)["reply_to"],
+        json!({"email": "ada@example.com", "name": "Ada Lovelace"})
+    );
+    assert_eq!(
+        body(4)["reply_to"],
+        json!({"email": "ada@example.com", "name": "Ada Bcc: victim@example.com"})
+    );
+
+    // An address-only Reply-To has no name; none at all leaves the field out.
+    let bare = ReplyTo {
+        address: "ada@example.com".into(),
+        name: None,
+    };
+    resend
+        .send(&http, "to@example.com", "S", "h", "t", None, Some(&bare))
+        .await
+        .unwrap();
+    sendgrid
+        .send(&http, "to@example.com", "S", "h", "t", None, Some(&bare))
+        .await
+        .unwrap();
+    resend
+        .send(&http, "to@example.com", "S", "h", "t", None, None)
+        .await
+        .unwrap();
+    sendgrid
+        .send(&http, "to@example.com", "S", "h", "t", None, None)
+        .await
+        .unwrap();
+    let seen = mock.seen.lock().unwrap().clone();
+    let body = |i: usize| serde_json::from_str::<Value>(&seen[i].body).unwrap();
+    assert_eq!(body(5)["reply_to"], "ada@example.com");
+    assert_eq!(body(6)["reply_to"], json!({"email": "ada@example.com"}));
+    assert!(body(7).get("reply_to").is_none());
+    assert!(body(8).get("reply_to").is_none());
+}
+
+/// The header block of a raw message, with folded lines joined.
+fn header_block(message: &str) -> String {
+    let message = message.replace("\r\n", "\n");
+    let head = message.split("\n\n").next().unwrap_or_default();
+    head.replace("\n ", " ").replace("\n\t", " ")
+}
+
+#[tokio::test]
+async fn smtp_sends_reply_to() {
+    let (port, mails) = smtp_server(false).await;
+    let p = Provider::from_record(
+        "smtp",
+        json!({"host": "127.0.0.1", "port": port, "use_tls": false,
+               "from_email": "forms@example.com"})
+        .as_object()
+        .unwrap(),
+    )
+    .unwrap();
+    let http = reqwest::Client::new();
+    for reply in [Some(ada()), Some(dirty()), None] {
+        p.send(&http, "to@example.com", "S", "h", "t", None, reply.as_ref())
+            .await
+            .unwrap();
+    }
+    let m = mails.lock().unwrap().clone();
+    let named = header_block(&m[0].data);
+    assert!(
+        named.contains("Reply-To: \"Ada Lovelace\" <ada@example.com>")
+            || named.contains("Reply-To: Ada Lovelace <ada@example.com>"),
+        "{named}"
+    );
+    let cleaned = header_block(&m[1].data);
+    assert!(cleaned.contains("Reply-To: "), "{cleaned}");
+    assert!(cleaned.contains("<ada@example.com>"), "{cleaned}");
+    assert!(!cleaned.lines().any(|l| l.starts_with("Bcc")), "{cleaned}");
+    assert!(!header_block(&m[2].data).contains("Reply-To"));
+    // Never the sender.
+    assert!(
+        named.contains("From: HookForms <forms@example.com>"),
+        "{named}"
+    );
+}
+
+#[tokio::test]
+async fn gmail_sends_reply_to() {
+    let (base, mock) = mock_server().await;
+    let token = temp_path("token.json");
+    std::fs::write(&token, json!({"token": "t"}).to_string()).unwrap();
+    let mut g = GmailProvider::new(&token, "me@example.com");
+    g.api_base = base;
+    let p = Provider::Gmail(g);
+    let http = reqwest::Client::new();
+    p.send(&http, "to@example.com", "S", "h", "t", None, Some(&ada()))
+        .await
+        .unwrap();
+    p.send(&http, "to@example.com", "S", "h", "t", None, None)
+        .await
+        .unwrap();
+    let seen = mock.seen.lock().unwrap().clone();
+    let named = header_block(&decode_raw(&seen[0].body));
+    assert!(named.contains("<ada@example.com>"), "{named}");
+    assert!(named.contains("Reply-To: "), "{named}");
+    assert!(named.contains("Ada Lovelace"), "{named}");
+    assert!(!header_block(&decode_raw(&seen[1].body)).contains("Reply-To"));
+    std::fs::remove_file(token).ok();
+}
+
+#[tokio::test]
+async fn legacy_notify_replies_to_the_submitter() {
+    let (port, mails) = smtp_server(false).await;
+    let state = state_with(&[]).await;
+    let inbox_id = add_inbox(&state.db, "contact", Some("a@example.com")).await;
+    put_smtp(&state.db, None, port).await;
+    let info = InboxInfo {
+        id: inbox_id,
+        slug: "contact".into(),
+        notify_email: Some("a@example.com".into()),
+        email_subject_prefix: None,
+        sender_name: Some("Acme".into()),
+    };
+    let with = json!({"name": "Ann", "email": "ann@example.com", "message": "Hello"});
+    let without = json!({"name": "Ann", "email": "not an address", "message": "Hello"});
+    assert_eq!(email::deliver_legacy(&state, &info, &with).await, 1);
+    assert_eq!(email::deliver_legacy(&state, &info, &without).await, 1);
+    let m = mails.lock().unwrap().clone();
+    let first = header_block(&m[0].data);
+    assert!(first.contains("Reply-To: Ann <ann@example.com>"), "{first}");
+    assert!(first.contains("From: Acme <forms@example.com>"), "{first}");
+    assert!(!header_block(&m[1].data).contains("Reply-To"));
 }
 
 #[tokio::test]
