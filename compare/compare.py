@@ -334,7 +334,7 @@ def write_report(results):
     lines = [
         "# HookForms: Python vs Rust comparison",
         "",
-        f"Run: {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} UTC.Python from `{os.environ.get('HFCOMPARE_PYTHON_REF', 'v0.1.0-python')}` "
+        f"Run: {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} UTC. Python from `{os.environ.get('HFCOMPARE_PYTHON_REF', 'v0.1.0-python')}` "
         "(docker compose project `hfcompare`), "
         "Rust release binary with SQLite in a temp dir. Same ADMIN_API_KEY, same requests, same order.",
         "",

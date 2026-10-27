@@ -1,8 +1,8 @@
 # HookForms: Python vs Rust comparison
 
-Run: 2026-10-27 17:04:14 UTC. Python from the last Python commit, now `v0.1.0-python` (docker compose project `hfcompare`), Rust release binary with SQLite in a temp dir. Same ADMIN_API_KEY, same requests, same order.
+Run: 2026-10-27 17:37:47 UTC. Python from `v0.1.0-python` (docker compose project `hfcompare`), Rust release binary with SQLite in a temp dir. Same ADMIN_API_KEY, same requests, same order.
 
-**247 cases: 239 identical, 8 known and accepted differences, 0 unexpected differences.**
+**247 cases: 237 identical, 10 known and accepted differences, 0 unexpected differences.**
 
 ## What is normalised
 
@@ -10,7 +10,7 @@ Run: 2026-10-27 17:04:14 UTC. Python from the last Python commit, now `v0.1.0-py
 - Timestamps keep their format, digits become `D`, the fraction becomes `.F` (pydantic trims trailing zeros, so its length varies run to run).
 - Response headers `date`, `server`, `content-length`, `connection`, `transfer-encoding` are dropped; `allow` is compared as a sorted list (hash-seeded order in Python); `x-ratelimit-reset` digits are masked; `x-ratelimit-remaining` is compared as zero or non-zero; a `location` keeps its path, while its scheme and host (each app's own address) become `<base>`.
 - Stored event `host` header and `source_ip` differ by how each app is reached (docker proxy vs direct) and are masked.
-- Outbound requests: `host`, `user-agent` (python-httpx vs HookForms/0.1.0), `content-length`, `accept`, `accept-encoding`, `connection` are dropped, and http vs https is ignored (Python reaches Turnstile, Resend and SendGrid over HTTPS through mapped hosts and a test CA, Rust over HTTP through `HOOKFORMS_TEST_UPSTREAM_BASE`). Records are sorted, because both apps send channels concurrently.
+- Outbound requests: `host`, `user-agent` (python-httpx vs HookForms/0.2.0), `content-length`, `accept`, `accept-encoding`, `connection` are dropped, and http vs https is ignored (Python reaches Turnstile, Resend and SendGrid over HTTPS through mapped hosts and a test CA, Rust over HTTP through `HOOKFORMS_TEST_UPSTREAM_BASE`). Records are sorted, because both apps send channels concurrently.
 - Each case sends its own `X-Forwarded-For`, so the per-IP rate limit and auth lockout do not leak between cases.
 
 ## Known, accepted differences
@@ -22,7 +22,8 @@ Run: 2026-10-27 17:04:14 UTC. Python from the last Python commit, now `v0.1.0-py
 - `non_object_bodies`: JSON array/primitive bodies: Python stores them but its event schema (body: dict) fails on read (500 on list/get); Rust lists them.
 - `bad_uuid_channel`: Channel id that is not a UUID: Python 500, Rust 404 (same class as bad_uuid_revoke).
 - `url_key_channels`: Discord/Slack/Teams channels configured with `url`: Python validates but its formatter only reads webhook_url (sends to an empty URL); Rust sends to `url`.
-- `health_checks`: Health checks: Python reports postgres and redis, Rust reports database (SQLite, no Redis), by design.
+- `health_checks`: Health checks: Python reports postgres and redis, Rust reports database (SQLite, no Redis), by design. The version differs too (see version).
+- `version`: Version: `/` and `/health` report 0.1.0 on Python and 0.2.0 on Rust.
 - `head_405`: HEAD on /hooks/{slug}: answer parity with Starlette 405 (Allow header order is hash-seeded).
 
 ## Unexpected differences seen on many cases
@@ -33,12 +34,12 @@ None.
 
 | # | Case | Result |
 |---|------|--------|
-| 1 | root | pass |
+| 1 | root | known |
 | 2 | health | known |
 | 3 | HEAD root | pass |
 | 4 | unknown path 404 | pass |
 | 5 | POST root 405 | pass |
-| 6 | CORS simple request | pass |
+| 6 | CORS simple request | known |
 | 7 | CORS preflight | pass |
 | 8 | trailing slash inboxes | pass |
 | 9 | no API key 401 | pass |
@@ -286,6 +287,59 @@ None.
 None.
 ## Known differences as observed
 
+### 1. root (`version`)
+
+Python: status 200, Rust: status 200
+
+<details><summary>Both answers</summary>
+
+```json
+{
+  "python": {
+    "body": {
+      "name": "HookForms",
+      "status": "ok",
+      "version": "0.1.0"
+    },
+    "headers": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+      "content-type": "application/json",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "x-ratelimit-limit": "100",
+      "x-ratelimit-remaining": "<n>",
+      "x-ratelimit-reset": "DDDDDDDDDD",
+      "x-xss-protection": "1; mode=block"
+    },
+    "status": 200
+  },
+  "rust": {
+    "body": {
+      "name": "HookForms",
+      "status": "ok",
+      "version": "0.2.0"
+    },
+    "headers": {
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+      "content-type": "application/json",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "x-ratelimit-limit": "100",
+      "x-ratelimit-remaining": "<n>",
+      "x-ratelimit-reset": "DDDDDDDDDD",
+      "x-xss-protection": "1; mode=block"
+    },
+    "status": 200
+  }
+}
+```
+
+</details>
+
 ### 2. health (`health_checks`)
 
 Python: status 200, Rust: status 200
@@ -322,7 +376,7 @@ Python: status 200, Rust: status 200
       },
       "status": "healthy",
       "timestamp": "DDDD-DD-DDTDD:DD:DD.F+00:00",
-      "version": "0.1.0"
+      "version": "0.2.0"
     },
     "headers": {
       "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
@@ -331,6 +385,63 @@ Python: status 200, Rust: status 200
       "strict-transport-security": "max-age=31536000; includeSubDomains",
       "x-content-type-options": "nosniff",
       "x-frame-options": "DENY",
+      "x-xss-protection": "1; mode=block"
+    },
+    "status": 200
+  }
+}
+```
+
+</details>
+
+### 6. CORS simple request (`version`)
+
+Python: status 200, Rust: status 200
+
+<details><summary>Both answers</summary>
+
+```json
+{
+  "python": {
+    "body": {
+      "name": "HookForms",
+      "status": "ok",
+      "version": "0.1.0"
+    },
+    "headers": {
+      "access-control-allow-credentials": "true",
+      "access-control-allow-origin": "*",
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+      "content-type": "application/json",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "x-ratelimit-limit": "100",
+      "x-ratelimit-remaining": "<n>",
+      "x-ratelimit-reset": "DDDDDDDDDD",
+      "x-xss-protection": "1; mode=block"
+    },
+    "status": 200
+  },
+  "rust": {
+    "body": {
+      "name": "HookForms",
+      "status": "ok",
+      "version": "0.2.0"
+    },
+    "headers": {
+      "access-control-allow-credentials": "true",
+      "access-control-allow-origin": "*",
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+      "content-type": "application/json",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "strict-transport-security": "max-age=31536000; includeSubDomains",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "x-ratelimit-limit": "100",
+      "x-ratelimit-remaining": "<n>",
+      "x-ratelimit-reset": "DDDDDDDDDD",
       "x-xss-protection": "1; mode=block"
     },
     "status": 200
