@@ -38,6 +38,8 @@ KNOWN = {
                         "its formatter only reads webhook_url (sends to an empty URL); Rust sends to `url`.",
     "health_checks": "Health checks: Python reports postgres and redis, Rust reports database (SQLite, no Redis), by design.",
     "head_405": "HEAD on /hooks/{slug}: answer parity with Starlette 405 (Allow header order is hash-seeded).",
+    "email_bodies": "Email bodies: emails follow the HookForms design now (designed HTML plus a plain-text "
+                    "part, multipart/alternative); Python sent HTML only. Subjects, senders and recipients still match.",
 }
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")

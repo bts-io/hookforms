@@ -1,13 +1,14 @@
-//! Email providers (Python `app/providers/`): Gmail (OAuth refresh token in a
-//! token file), Resend, SendGrid and SMTP. Each sends one HTML email to one
-//! recipient, from `"{sender_name or 'HookForms'} <{from}>"`.
+//! Email providers: Gmail (OAuth refresh token in a token file), Resend,
+//! SendGrid and SMTP. Each sends one email to one recipient, from
+//! `"{sender_name or 'HookForms'} <{from}>"`, always as an HTML part plus its
+//! plain-text twin (`multipart/alternative` on the wire).
 
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use base64::Engine;
-use lettre::message::Mailbox;
 use lettre::message::header::ContentType;
+use lettre::message::{Body, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use serde_json::{Map, Value};
@@ -64,6 +65,7 @@ impl Provider {
         to: &str,
         subject: &str,
         html: &str,
+        text: &str,
         sender_name: Option<&str>,
     ) -> Result<(), String> {
         let display = match sender_name {
@@ -76,10 +78,13 @@ impl Provider {
         let to = clean_address(to);
         let (to, subject, display) = (to.as_str(), subject.as_str(), display.as_str());
         match self {
-            Provider::Gmail(p) => p.send(http, to, subject, html, display).await,
-            Provider::Resend(p) => p.send_resend(http, to, subject, html, display).await,
-            Provider::SendGrid(p) => p.send_sendgrid(http, to, subject, html, display).await,
-            Provider::Smtp(p) => p.send(to, subject, html, display).await,
+            Provider::Gmail(p) => p.send(http, to, subject, html, text, display).await,
+            Provider::Resend(p) => p.send_resend(http, to, subject, html, text, display).await,
+            Provider::SendGrid(p) => {
+                p.send_sendgrid(http, to, subject, html, text, display)
+                    .await
+            }
+            Provider::Smtp(p) => p.send(to, subject, html, text, display).await,
         }
     }
 }
@@ -134,13 +139,15 @@ fn opt_str(config: &Map<String, Value>, key: &str) -> String {
     }
 }
 
-/// An HTML message with the same headers Python's `MIMEText(html, "html")` sets.
+/// One `multipart/alternative` message: the plain-text part first, then the
+/// HTML part, so clients that show HTML pick the last one they understand.
 fn build_message(
     from: &str,
     display: &str,
     to: &str,
     subject: &str,
     html: &str,
+    text: &str,
 ) -> Result<Message, String> {
     let from_addr = from
         .parse()
@@ -152,25 +159,25 @@ fn build_message(
         .from(Mailbox::new(Some(display.to_string()), from_addr))
         .to(to_box)
         .subject(subject)
-        .header(ContentType::TEXT_HTML)
-        .body(html_body(html))
+        .multipart(
+            MultiPart::alternative()
+                .singlepart(part(ContentType::TEXT_PLAIN, text))
+                .singlepart(part(ContentType::TEXT_HTML, html)),
+        )
         .map_err(|e| format!("cannot build message: {e}"))
 }
 
-/// The body as Python's `MIMEText` encodes it. ASCII text goes as 7bit (its
-/// line endings become CRLF on the wire, as smtplib does). Non-ASCII text uses
-/// the utf-8 charset, which Python always sends as base64 of the text exactly
-/// as given: `\n` line endings kept, nothing appended. lettre would normalise
-/// the line endings of a string, so the bytes are passed as binary.
-fn html_body(html: &str) -> lettre::message::Body {
-    use lettre::message::Body;
+/// One body part. lettre picks 7bit or quoted-printable for ASCII text;
+/// anything else goes as base64 of the exact utf-8 text.
+fn part(content_type: ContentType, content: &str) -> SinglePart {
     use lettre::message::header::ContentTransferEncoding;
-    if html.is_ascii() {
-        Body::new(html.to_string())
+    let body = if content.is_ascii() {
+        Body::new(content.to_string())
     } else {
-        Body::new_with_encoding(html.as_bytes().to_vec(), ContentTransferEncoding::Base64)
+        Body::new_with_encoding(content.as_bytes().to_vec(), ContentTransferEncoding::Base64)
             .unwrap_or_else(Body::new)
-    }
+    };
+    SinglePart::builder().header(content_type).body(body)
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +230,7 @@ impl ApiProvider {
         to: &str,
         subject: &str,
         html: &str,
+        text: &str,
         display: &str,
     ) -> Result<(), String> {
         let payload = serde_json::json!({
@@ -230,6 +238,7 @@ impl ApiProvider {
             "to": [to],
             "subject": subject,
             "html": html,
+            "text": text,
         });
         self.post(http, "/emails", payload, "Resend").await?;
         tracing::info!(to, subject, "Email sent via Resend");
@@ -242,13 +251,18 @@ impl ApiProvider {
         to: &str,
         subject: &str,
         html: &str,
+        text: &str,
         display: &str,
     ) -> Result<(), String> {
+        // SendGrid wants text/plain first when both are given.
         let payload = serde_json::json!({
             "personalizations": [{"to": [{"email": to}]}],
             "from": {"email": self.from_email, "name": display},
             "subject": subject,
-            "content": [{"type": "text/html", "value": html}],
+            "content": [
+                {"type": "text/plain", "value": text},
+                {"type": "text/html", "value": html},
+            ],
         });
         self.post(http, "/v3/mail/send", payload, "SendGrid")
             .await?;
@@ -289,8 +303,15 @@ impl SmtpProvider {
         })
     }
 
-    async fn send(&self, to: &str, subject: &str, html: &str, display: &str) -> Result<(), String> {
-        let message = build_message(&self.from_email, display, to, subject, html)?;
+    async fn send(
+        &self,
+        to: &str,
+        subject: &str,
+        html: &str,
+        text: &str,
+        display: &str,
+    ) -> Result<(), String> {
+        let message = build_message(&self.from_email, display, to, subject, html, text)?;
         let mut builder = if self.use_tls {
             // Python: plain connect, then STARTTLS, then login.
             AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&self.host)
@@ -486,6 +507,7 @@ impl GmailProvider {
         to: &str,
         subject: &str,
         html: &str,
+        text: &str,
         display: &str,
     ) -> Result<(), String> {
         let mut token = self.read_token_file()?;
@@ -509,7 +531,7 @@ impl GmailProvider {
             return Err("Gmail credentials are invalid. Re-run gmail_auth.py.".into());
         }
 
-        let message = build_message(&self.sender_email, display, to, subject, html)?;
+        let message = build_message(&self.sender_email, display, to, subject, html, text)?;
         let raw = base64::engine::general_purpose::URL_SAFE.encode(message.formatted());
         let url = format!("{}/gmail/v1/users/me/messages/send", self.api_base);
         let payload = serde_json::json!({ "raw": raw });

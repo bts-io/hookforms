@@ -1,145 +1,250 @@
-//! Notification email subject and HTML body for the legacy `notify_email`
-//! path in `routers/webhooks.py`, rendered exactly like the Python version.
-//! The email channel type renders its own page in `channels::email`.
+//! The notification email HookForms sends for a submission, used by both
+//! email paths: the legacy `notify_email` field and the `email` channel type.
 //!
-//! It sends a single `text/html` part, as Python does. The Python builtins the
-//! template leans on (`str()`, truthiness, `html.escape`, `str.title`,
-//! `json.dumps`) come from `channels::pyfmt`, so field labels and values come
-//! out byte for byte the same on every path.
+//! One entry point, [`render`], builds the subject, a designed HTML part
+//! (table layout, one 600px column, inline styles, light only, system fonts)
+//! and a plain-text twin from the same rows, so the two never drift apart.
+//! Every value from the submission is HTML-escaped. Providers send both parts
+//! as `multipart/alternative`.
 
 use serde_json::{Map, Value};
 
-/// One copy of each Python formatting helper, shared with the channel code.
+use crate::channels::format_value::DEFAULT_MAX_LEN;
+/// One copy of each formatting helper, shared with the channel code.
 pub use crate::channels::format_value::format_value;
-pub use crate::channels::pyfmt::{html_escape, py_str, title as py_title, truthy};
+pub use crate::channels::pyfmt::{html_escape, label, py_str, truthy};
+
+const FONT: &str = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+const MONO: &str = "ui-monospace,SFMono-Regular,Menlo,Consolas,'Courier New',monospace";
+const CANVAS: &str = "#f4f5f7";
+const PAPER: &str = "#ffffff";
+const INK: &str = "#1a1a2e";
+const BODY: &str = "#333333";
+const MUTED: &str = "#666666";
+const RULE: &str = "#e5e7eb";
+const TINT: &str = "#f6f7f9";
+const GOLD: &str = "#d4a843";
+const DEFAULT_SENDER: &str = "HookForms";
+const NO_FIELDS: &str = "The submission had no fields.";
 
 /// Keys never shown as fields in the email.
-const SKIP_KEYS: &[&str] = &["raw", "source", "cf-turnstile-response"];
+const SKIP_KEYS: &[&str] = crate::channels::SKIP_KEYS;
 
-/// Field rows of the table, shared by both templates.
-fn field_rows(body: &Map<String, Value>) -> String {
-    let mut rows = String::new();
-    for (key, val) in body {
-        if SKIP_KEYS.contains(&key.as_str()) || !truthy(val) {
-            continue;
-        }
-        let label = html_escape(&py_title(&key.replace('_', " ")));
-        let escaped_val = html_escape(&format_value(val, 300));
-        rows.push_str(&format!(
-            "<tr>\
-             <td style=\"padding:10px 14px;font-weight:600;color:#555;\
-             white-space:nowrap;vertical-align:top;border-bottom:1px solid #eee;\">{label}</td>\
-             <td style=\"padding:10px 14px;color:#222;border-bottom:1px solid #eee;\">{escaped_val}</td>\
-             </tr>"
-        ));
-    }
-    rows
-}
-
-/// `str(body.get(key, default))`.
-fn get_str(body: &Map<String, Value>, key: &str, default: &str) -> String {
-    body.get(key)
-        .map(py_str)
-        .unwrap_or_else(|| default.to_string())
-}
-
-fn page(heading: &str, rows: &str, reply_button: &str, footer_name: &str, slug: &str) -> String {
-    format!(
-        r#"<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"></head>
-<body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:32px 0;">
-    <tr><td align="center">
-      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
-        <tr>
-          <td style="background:#1a1a2e;padding:24px 32px;">
-            <h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:600;">{heading}</h1>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:24px 32px;">
-            <p style="margin:0 0 16px;color:#666;font-size:14px;">A new form submission was received:</p>
-            <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eee;border-radius:6px;overflow:hidden;">
-              {rows}
-            </table>
-          </td>
-        </tr>
-        {reply_button}
-        <tr>
-          <td style="padding:16px 32px;background:#fafafa;border-top:1px solid #eee;">
-            <p style="margin:0;color:#999;font-size:12px;">Delivered by {footer_name} &middot; <code style="background:#eee;padding:2px 6px;border-radius:3px;font-size:11px;">/hooks/{slug}</code></p>
-          </td>
-        </tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>"#
-    )
-}
-
-fn reply_button(email_escaped: &str, name_escaped: &str) -> String {
-    format!(
-        "<tr><td style=\"padding:0 32px 24px;\"><a href=\"mailto:{email_escaped}\" \
-         style=\"display:inline-block;padding:10px 20px;background:#1a1a2e;color:#fff;\
-         text-decoration:none;border-radius:5px;font-size:14px;\">Reply to {name_escaped}</a></td></tr>"
-    )
-}
-
-/// A rendered notification: subject plus HTML body.
+/// A rendered notification: subject, HTML part and plain-text part.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rendered {
     pub subject: String,
     pub html: String,
+    pub text: String,
 }
 
-/// Legacy `notify_email` email (`routers/webhooks.py`): the heading carries
-/// the subject prefix, the footer names `inbox.sender_name or 'HookForms'`.
+/// The submitted text when the body holds nothing but `raw` (a body that was
+/// not a form or a JSON object), else `None`. A form field named `raw` next to
+/// other fields is not shown.
+fn raw_only(body: &Map<String, Value>) -> Option<&str> {
+    let mut keys = body.keys().filter(|k| *k != "cf-turnstile-response");
+    match (keys.next(), keys.next()) {
+        (Some(k), None) if k == "raw" => body.get("raw").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+/// `body[key]` as text when it is set and not empty.
+fn field(body: &Map<String, Value>, key: &str) -> Option<String> {
+    body.get(key).filter(|v| truthy(v)).map(py_str)
+}
+
+/// A reply address worth a `mailto:` link: one token with an `@` in it.
+fn reply_address(body: &Map<String, Value>) -> Option<String> {
+    field(body, "email").filter(|e| e.contains('@') && !e.chars().any(char::is_whitespace))
+}
+
+/// Build the notification email for a submission. `subject` is final (the
+/// caller adds the inbox prefix); `sender_name` is the inbox's sender name.
+pub fn render(
+    slug: &str,
+    subject: &str,
+    sender_name: Option<&str>,
+    body: &Map<String, Value>,
+) -> Rendered {
+    let raw = raw_only(body);
+    let rows: Vec<(String, String)> = if raw.is_some() {
+        Vec::new()
+    } else {
+        body.iter()
+            .filter(|(k, v)| !SKIP_KEYS.contains(&k.as_str()) && truthy(v))
+            .map(|(k, v)| (label(k), format_value(v, DEFAULT_MAX_LEN)))
+            .collect()
+    };
+
+    let name = field(body, "name");
+    let email = reply_address(body);
+    let headline = match &name {
+        Some(n) => format!("New submission from {n}"),
+        None => "New submission".to_string(),
+    };
+    let preheader = match &name {
+        Some(n) => format!("New submission from {n}."),
+        None => "A new submission arrived.".to_string(),
+    };
+    let intro = if raw.is_some() {
+        "A new submission was received:"
+    } else {
+        "A new form submission was received:"
+    };
+    let reason =
+        format!("You get this email because the inbox /hooks/{slug} sends its submissions here.");
+    let sent_by = format!(
+        "Delivered by {}.",
+        sender_name
+            .filter(|s| !s.is_empty())
+            .unwrap_or(DEFAULT_SENDER)
+    );
+    let reply_to = name.clone().or_else(|| email.clone()).unwrap_or_default();
+
+    let content = if let Some(raw) = raw {
+        format!(
+            "<pre style=\"margin:0 0 20px;padding:12px 14px;font-family:{MONO};font-size:13px;line-height:1.5;color:{INK};background-color:{TINT};border:1px solid {RULE};white-space:pre-wrap;word-break:break-word;\">{}</pre>",
+            html_escape(raw)
+        )
+    } else if rows.is_empty() {
+        format!(
+            "<p style=\"margin:0 0 16px;font-family:{FONT};font-size:14px;line-height:1.6;color:{MUTED};\">{NO_FIELDS}</p>"
+        )
+    } else {
+        let last = rows.len() - 1;
+        let cells: String = rows
+            .iter()
+            .enumerate()
+            .map(|(i, (label, value))| {
+                let border = if i < last {
+                    format!("border-bottom:1px solid {RULE};")
+                } else {
+                    String::new()
+                };
+                format!(
+                    "<tr><td width=\"35%\" valign=\"top\" style=\"padding:10px 14px;font-family:{FONT};font-size:14px;line-height:1.5;color:{MUTED};{border}\">{}</td><td valign=\"top\" style=\"padding:10px 14px;font-family:{FONT};font-size:15px;line-height:1.5;font-weight:600;color:{INK};word-break:break-word;{border}\">{}</td></tr>",
+                    html_escape(label),
+                    html_escape(value).replace("\r\n", "<br>").replace('\n', "<br>"),
+                )
+            })
+            .collect();
+        format!(
+            "<table role=\"presentation\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" width=\"100%\" style=\"width:100%;margin:0 0 20px;border:1px solid {RULE};\">{cells}</table>"
+        )
+    };
+
+    let button = match &email {
+        Some(addr) => format!(
+            "<table role=\"presentation\" cellspacing=\"0\" cellpadding=\"0\" border=\"0\" style=\"margin:8px 0 24px;\"><tr><td bgcolor=\"{INK}\" style=\"border-radius:6px;background-color:{INK};\"><a href=\"mailto:{}\" style=\"display:inline-block;padding:14px 28px;font-family:{FONT};font-size:16px;font-weight:bold;line-height:1.2;color:#ffffff;background-color:{INK};border-radius:6px;text-decoration:none;\">Reply to {}</a></td></tr></table>",
+            html_escape(addr),
+            html_escape(&reply_to),
+        ),
+        None => String::new(),
+    };
+
+    let preheader_fill = "&#847;&zwnj;&nbsp;".repeat(30);
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>{title}</title>
+<!--[if mso]><noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript><![endif]-->
+<style>
+body{{margin:0;padding:0;background-color:{CANVAS};-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;}}
+table{{border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;}}
+a[x-apple-data-detectors]{{color:inherit !important;text-decoration:none !important;}}
+@media only screen and (max-width:620px){{
+.container{{width:100% !important;}}
+.pad{{padding-left:20px !important;padding-right:20px !important;}}
+}}
+</style>
+</head>
+<body style="margin:0;padding:0;background-color:{CANVAS};" bgcolor="{CANVAS}">
+<div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">{preheader}{preheader_fill}</div>
+<table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="width:100%;background-color:{CANVAS};" bgcolor="{CANVAS}">
+<tr><td align="center" style="padding:24px 12px;">
+<!--[if mso]><table role="presentation" width="600" align="center" cellspacing="0" cellpadding="0" border="0"><tr><td><![endif]-->
+<table role="presentation" cellspacing="0" cellpadding="0" border="0" class="container" width="600" align="center" style="width:600px;max-width:600px;background-color:{PAPER};" bgcolor="{PAPER}">
+<tr><td class="pad" bgcolor="{INK}" style="padding:20px 32px;background-color:{INK};font-family:{FONT};font-size:20px;line-height:1.2;font-weight:800;color:#ffffff;">HookForms</td></tr>
+<tr><td style="height:4px;font-size:0;line-height:0;background-color:{GOLD};" bgcolor="{GOLD}">&nbsp;</td></tr>
+<tr><td class="pad" style="padding:28px 32px 0;">
+<h1 style="margin:0 0 16px;font-family:{FONT};font-size:26px;line-height:1.25;font-weight:800;color:{INK};">{headline_html}</h1>
+</td></tr>
+<tr><td class="pad" style="padding:0 32px 12px;">
+<p style="margin:0 0 16px;font-family:{FONT};font-size:16px;line-height:1.6;color:{BODY};">{intro}</p>
+{content}
+{button}
+</td></tr>
+<tr><td class="pad" style="padding:20px 32px 28px;border-top:1px solid {RULE};">
+<p style="margin:0 0 6px;font-family:{FONT};font-size:13px;line-height:1.5;color:{MUTED};">{reason_html}</p>
+<p style="margin:0;font-family:{FONT};font-size:13px;line-height:1.5;color:{MUTED};">{sent_by_html}</p>
+</td></tr>
+</table>
+<!--[if mso]></td></tr></table><![endif]-->
+</td></tr></table>
+</body>
+</html>"#,
+        title = html_escape(subject),
+        preheader = html_escape(&preheader),
+        headline_html = html_escape(&headline),
+        reason_html = html_escape(&reason),
+        sent_by_html = html_escape(&sent_by),
+    );
+
+    let mut parts = vec![headline, intro.to_string()];
+    if let Some(raw) = raw {
+        parts.push(raw.to_string());
+    } else if rows.is_empty() {
+        parts.push(NO_FIELDS.to_string());
+    } else {
+        parts.push(
+            rows.iter()
+                .map(|(l, v)| format!("{l}: {v}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    if let Some(addr) = &email {
+        parts.push(format!("Reply to {reply_to}: mailto:{addr}"));
+    }
+    let text = format!("{}\n\n--\n{reason}\n{sent_by}\n", parts.join("\n\n"));
+
+    Rendered {
+        subject: subject.to_string(),
+        html,
+        text,
+    }
+}
+
+/// The subject both paths use: the prefix, then `from {name}` or
+/// `New Submission` when the submission has no name.
+pub fn subject_line(prefix: &str, body: &Map<String, Value>) -> String {
+    match field(body, "name") {
+        Some(n) => format!("{prefix} from {n}"),
+        None => format!("{prefix} New Submission"),
+    }
+}
+
+/// The legacy `notify_email` email: the subject prefix defaults to `[slug]`,
+/// the footer names the inbox's sender name or HookForms.
 pub fn render_legacy(
     slug: &str,
     subject_prefix: Option<&str>,
     inbox_sender_name: Option<&str>,
     body: &Map<String, Value>,
 ) -> Rendered {
-    let plain_prefix = match subject_prefix {
+    let prefix = match subject_prefix {
         Some(p) if !p.is_empty() => p.to_string(),
         _ => format!("[{slug}]"),
     };
-    let prefix = html_escape(&plain_prefix);
-    let sender_name = html_escape(&get_str(body, "name", "Unknown"));
-    let sender_email_raw = get_str(body, "email", "");
-    let sender_email = html_escape(&sender_email_raw);
-    let subject_detail = if sender_name != "Unknown" {
-        format!("from {sender_name}")
-    } else {
-        "New Submission".to_string()
-    };
-    let button = if sender_email_raw.is_empty() {
-        String::new()
-    } else {
-        reply_button(&sender_email, &sender_name)
-    };
-    let footer = html_escape(match inbox_sender_name {
-        Some(n) if !n.is_empty() => n,
-        _ => "HookForms",
-    });
-    let html = page(
-        &format!("{prefix} {subject_detail}"),
-        &field_rows(body),
-        &button,
-        &footer,
-        &html_escape(slug),
-    );
-
-    let plain_detail = match body.get("name") {
-        Some(v) if truthy(v) => format!("from {}", py_str(v)),
-        _ => "New Submission".to_string(),
-    };
-    Rendered {
-        subject: format!("{plain_prefix} {plain_detail}"),
-        html,
-    }
+    render(slug, &subject_line(&prefix, body), inbox_sender_name, body)
 }
 
 #[cfg(test)]
@@ -152,115 +257,133 @@ mod tests {
     }
 
     #[test]
-    fn python_helpers() {
-        assert_eq!(py_title("first name"), "First Name");
-        assert_eq!(py_title("e-mail ADDRESS"), "E-Mail Address");
-        assert_eq!(py_title("abc123def"), "Abc123Def");
+    fn helpers() {
+        assert_eq!(label("first_name"), "First Name");
         assert_eq!(
             html_escape(r#"<a href="x">'&'</a>"#),
             "&lt;a href=&quot;x&quot;&gt;&#x27;&amp;&#x27;&lt;/a&gt;"
         );
-        assert_eq!(py_str(&json!(null)), "None");
-        assert_eq!(py_str(&json!(true)), "True");
-        assert_eq!(py_str(&json!(12)), "12");
-        assert_eq!(py_str(&json!(1.5)), "1.5");
-        assert_eq!(py_str(&json!(["a", 1, null])), "['a', 1, None]");
-        assert_eq!(py_str(&json!({"k": "it's"})), r#"{'k': "it's"}"#);
-        assert_eq!(
-            crate::channels::pyfmt::py_dumps(&json!({"b": [1, 2], "a": "é\n"})),
-            r#"{"b": [1, 2], "a": "\u00e9\n"}"#
-        );
-        assert!(!truthy(&json!(0)));
-        assert!(!truthy(&json!("")));
-        assert!(!truthy(&json!({})));
-        assert!(truthy(&json!("x")));
-    }
-
-    #[test]
-    fn format_value_matches_python() {
-        assert_eq!(format_value(&json!(null), 300), "");
-        assert_eq!(format_value(&json!([]), 300), "(empty)");
         assert_eq!(format_value(&json!(["a", 2, true]), 300), "a, 2, True");
-        assert_eq!(
-            format_value(&json!({"login": "octo", "id": 1}), 300),
-            "octo"
-        );
-        assert_eq!(
-            format_value(&json!([{"name": "a"}, {"title": "b"}]), 300),
-            "a, b"
-        );
-        assert_eq!(
-            format_value(&json!({"x": 1, "y": [1]}), 300),
-            r#"{"x": 1, "y": [1]}"#
-        );
-        assert_eq!(format_value(&json!({"x": "abcdef"}), 5), r#"{"x":..."#);
-    }
-
-    /// Floats print like Python's `str(float)` (values from Python 3).
-    #[test]
-    fn floats_match_python() {
         assert_eq!(format_value(&json!(1e-05), 300), "1e-05");
-        assert_eq!(format_value(&json!([1.5e-07, "x"]), 300), "1.5e-07, x");
-        assert_eq!(
-            format_value(&json!({"a": 1e-05, "b": [1e16]}), 300),
-            r#"{"a": 1e-05, "b": [1e+16]}"#
-        );
-        let r = render_legacy("c", None, None, &obj(json!({"name": 1.5e-07})));
-        assert_eq!(r.subject, "[c] from 1.5e-07");
-        assert!(r.html.contains(">[c] from 1.5e-07</h1>"));
+        assert!(!truthy(&json!("")));
     }
 
     #[test]
-    fn legacy_render_matches_python() {
+    fn subject_lines() {
+        let r = render_legacy("contact", None, None, &obj(json!({"message": "hi"})));
+        assert_eq!(r.subject, "[contact] New Submission");
+        let r = render_legacy("c", Some("[Site]"), None, &obj(json!({"name": "Ann <A>"})));
+        assert_eq!(r.subject, "[Site] from Ann <A>");
+        assert!(r.html.contains("<title>[Site] from Ann &lt;A&gt;</title>"));
+        let r = render_legacy("c", Some(""), None, &obj(json!({"name": null})));
+        assert_eq!(r.subject, "[c] New Submission");
+        assert!(r.html.contains(">New submission</h1>"));
+    }
+
+    #[test]
+    fn html_and_text_from_the_same_rows() {
         let body = obj(json!({
             "name": "Ann <A>",
             "email": "ann@example.com",
             "first_name": "Ann",
+            "message": "Line 1\nLine 2 & more",
             "empty": "",
-            "source": "web",
+            "source": "landing-page",
+            "cf-turnstile-response": "t",
             "tags": ["a", "b"]
         }));
-        let r = render_legacy("contact", Some("[Site]"), Some("Acme & Co"), &body);
-        assert_eq!(r.subject, "[Site] from Ann <A>");
-        assert!(r.html.contains(">[Site] from Ann &lt;A&gt;</h1>"));
-        assert!(r.html.contains(r#"<a href="mailto:ann@example.com" style="display:inline-block;padding:10px 20px;background:#1a1a2e;color:#fff;text-decoration:none;border-radius:5px;font-size:14px;">Reply to Ann &lt;A&gt;</a>"#));
-        assert!(r.html.contains(r#"<td style="padding:10px 14px;font-weight:600;color:#555;white-space:nowrap;vertical-align:top;border-bottom:1px solid #eee;">First Name</td><td style="padding:10px 14px;color:#222;border-bottom:1px solid #eee;">Ann</td>"#));
-        assert!(r.html.contains(">Tags</td>"));
+        let r = render("contact", "[Site] from Ann <A>", Some("Acme & Co"), &body);
+
+        // Masthead, gold rule, headline, escaped values, line breaks kept.
+        assert!(r.html.contains(">HookForms</td></tr>"));
+        assert!(r.html.contains("background-color:#d4a843;"));
+        assert!(r.html.contains(">New submission from Ann &lt;A&gt;</h1>"));
+        assert!(r.html.contains(">First Name</td>"));
+        assert!(r.html.contains(">Line 1<br>Line 2 &amp; more</td>"));
         assert!(r.html.contains(">a, b</td>"));
-        assert!(!r.html.contains(">Empty<"));
-        assert!(!r.html.contains(">Source<"));
-        assert!(r.html.contains("Delivered by Acme &amp; Co &middot;"));
-        assert!(r.html.contains(">/hooks/contact</code>"));
+        for hidden in [">Empty<", ">Source<", "Cf-Turnstile", "landing-page"] {
+            assert!(!r.html.contains(hidden), "{hidden}");
+        }
+        assert!(r.html.contains(r#"<a href="mailto:ann@example.com""#));
+        assert!(r.html.contains(">Reply to Ann &lt;A&gt;</a>"));
+        assert!(r.html.contains("Delivered by Acme &amp; Co."));
+        assert!(r.html.contains("the inbox /hooks/contact sends"));
+        assert!(!r.html.contains("<script"));
+
+        assert_eq!(
+            r.text,
+            "New submission from Ann <A>\n\n\
+             A new form submission was received:\n\n\
+             Name: Ann <A>\nEmail: ann@example.com\nFirst Name: Ann\n\
+             Message: Line 1\nLine 2 & more\nTags: a, b\n\n\
+             Reply to Ann <A>: mailto:ann@example.com\n\n\
+             --\n\
+             You get this email because the inbox /hooks/contact sends its submissions here.\n\
+             Delivered by Acme & Co.\n"
+        );
         // Field order follows the submission.
-        let name_at = r.html.find(">Name</td>").unwrap();
-        let tags_at = r.html.find(">Tags</td>").unwrap();
-        assert!(name_at < tags_at);
+        assert!(r.html.find(">Name</td>").unwrap() < r.html.find(">Tags</td>").unwrap());
     }
 
     #[test]
-    fn legacy_render_defaults() {
+    fn escapes_hostile_values() {
+        let body = obj(json!({
+            "name": "<script>alert(1)</script>",
+            "email": "\"><img src=x>@example.com",
+            "x<y": "'quoted'"
+        }));
+        let r = render("s<l>ug", "S", Some("<b>Shop</b>"), &body);
+        assert!(!r.html.contains("<script>"));
+        assert!(!r.html.contains("<img"));
+        assert!(!r.html.contains("<b>Shop"));
+        assert!(r.html.contains("/hooks/s&lt;l&gt;ug"));
+        assert!(r.html.contains(">X&lt;Y</td>"));
+        assert!(r.html.contains("&#x27;quoted&#x27;"));
+    }
+
+    #[test]
+    fn defaults_and_no_reply_button() {
         let r = render_legacy("contact", None, None, &obj(json!({"message": "hi"})));
-        assert_eq!(r.subject, "[contact] New Submission");
-        assert!(r.html.contains(">[contact] New Submission</h1>"));
+        assert!(r.html.contains(">New submission</h1>"));
+        assert!(r.html.contains("A new submission arrived."));
         assert!(!r.html.contains("mailto:"));
-        assert!(r.html.contains("Delivered by HookForms &middot;"));
-        // Python quirk: a null name reads "None" in the HTML, "New Submission" in the subject.
-        let r = render_legacy("c", Some(""), None, &obj(json!({"name": null})));
-        assert_eq!(r.subject, "[c] New Submission");
-        assert!(r.html.contains(">[c] from None</h1>"));
+        assert!(!r.text.contains("mailto:"));
+        assert!(r.html.contains("Delivered by HookForms."));
+        assert!(r.text.ends_with("Delivered by HookForms.\n"));
+        // Not an address: no button.
+        let r = render("s", "S", None, &obj(json!({"email": "not an address"})));
+        assert!(!r.html.contains("mailto:"));
+        // Address but no name: the button names the address.
+        let r = render("s", "S", None, &obj(json!({"email": "e@example.com"})));
+        assert!(r.html.contains(">Reply to e@example.com</a>"));
+        assert!(
+            r.text
+                .contains("Reply to e@example.com: mailto:e@example.com")
+        );
     }
 
     #[test]
-    fn full_page_shape() {
-        let r = render_legacy("s", None, None, &obj(json!({"a": "1"})));
-        assert!(
-            r.html
-                .starts_with("<!DOCTYPE html>\n<html>\n<head><meta charset=\"utf-8\"></head>\n")
-        );
-        assert!(r.html.ends_with("  </table>\n</body>\n</html>"));
-        assert!(
-            r.html
-                .contains("\n        \n        <tr>\n          <td style=\"padding:16px 32px;")
-        );
+    fn raw_body_and_empty_body() {
+        let r = render("s", "S", None, &obj(json!({"raw": "plain <text>\nline 2"})));
+        assert!(r.html.contains("A new submission was received:"));
+        assert!(r.html.contains(">plain &lt;text&gt;\nline 2</pre>"));
+        assert!(r.text.contains("\n\nplain <text>\nline 2\n\n--\n"));
+        // `raw` next to other fields is not shown.
+        let r = render("s", "S", None, &obj(json!({"raw": "r", "a": "1"})));
+        assert!(!r.html.contains("<pre"));
+        assert!(!r.html.contains(">Raw</td>"));
+        let r = render("s", "S", None, &Map::new());
+        assert!(r.html.contains("The submission had no fields."));
+        assert!(r.text.contains("The submission had no fields."));
+    }
+
+    #[test]
+    fn page_shape() {
+        let r = render("s", "S", None, &obj(json!({"a": "1"})));
+        assert!(r.html.starts_with("<!DOCTYPE html>\n<html lang=\"en\""));
+        assert!(r.html.ends_with("</body>\n</html>"));
+        assert!(r.html.contains(r#"width="600""#));
+        assert!(r.html.contains(r#"role="presentation""#));
+        assert!(!r.html.contains('\u{2014}') && !r.html.contains('\u{2013}'));
     }
 }

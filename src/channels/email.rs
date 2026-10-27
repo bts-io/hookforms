@@ -1,8 +1,8 @@
-//! The `email` channel type (Python `dispatcher._send_emails` and
-//! `_build_email_html`): recipients from every email channel of the inbox,
+//! The `email` channel type: recipients from every email channel of the inbox,
 //! the per-inbox rate limit (10 per 10 minutes, key `channel_email_rate:{id}`),
-//! and the HTML body. Delivery goes through the inbox's resolved email
-//! provider, which step 5 (`crate::email`) owns; see `resolve_mailer`.
+//! and the email itself, rendered by `crate::email::render` (HTML plus a
+//! plain-text twin). Delivery goes through the inbox's resolved email
+//! provider (`crate::email`); see `resolve_mailer`.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -12,8 +12,7 @@ use std::time::Duration;
 use serde_json::{Map, Value};
 
 use super::ChannelContext;
-use super::format_value::{DEFAULT_MAX_LEN, format_value};
-use super::pyfmt::{html_escape, label, py_str, truthy};
+use super::pyfmt::py_str;
 use crate::state::AppState;
 
 pub const EMAIL_RATE_LIMIT: u64 = 10;
@@ -21,8 +20,8 @@ pub const EMAIL_RATE_WINDOW: Duration = Duration::from_secs(600);
 
 pub type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
-/// What the channel dispatcher needs from an email provider (Python
-/// `providers.base.EmailProvider.send_email`).
+/// What the channel dispatcher needs from an email provider: send one email,
+/// HTML plus its plain-text twin, to one recipient.
 pub trait ChannelMailer: Send + Sync {
     fn provider_type(&self) -> &str;
     fn send_email<'a>(
@@ -30,6 +29,7 @@ pub trait ChannelMailer: Send + Sync {
         to: &'a str,
         subject: &'a str,
         html: &'a str,
+        text: &'a str,
         sender_name: &'a str,
     ) -> SendFuture<'a>;
 }
@@ -68,11 +68,12 @@ impl ChannelMailer for ProviderMailer {
         to: &'a str,
         subject: &'a str,
         html: &'a str,
+        text: &'a str,
         sender_name: &'a str,
     ) -> SendFuture<'a> {
         Box::pin(
             self.provider
-                .send(&self.http, to, subject, html, Some(sender_name)),
+                .send(&self.http, to, subject, html, text, Some(sender_name)),
         )
     }
 }
@@ -92,99 +93,14 @@ pub fn recipients_of(config: &Map<String, Value>) -> Vec<String> {
     }
 }
 
-/// Python: `f"{prefix} from {name}"`, or `New Submission` when there is no name.
+/// The prefix, then `from {name}`, or `New Submission` when there is no name.
 pub fn subject(ctx: &ChannelContext) -> String {
-    let name = ctx
-        .body
-        .get("name")
-        .map(py_str)
-        .unwrap_or_else(|| "Unknown".into());
-    let detail = if name != "Unknown" {
-        format!("from {name}")
-    } else {
-        "New Submission".into()
-    };
-    format!("{} {detail}", ctx.subject_prefix)
+    crate::email::render::subject_line(&ctx.subject_prefix, &ctx.body)
 }
 
-/// Python `_build_email_html(slug, body, sender_name)`.
-pub fn build_email_html(slug: &str, body: &Map<String, Value>, sender_name: &str) -> String {
-    let slug_escaped = html_escape(slug);
-    let mut field_rows = String::new();
-    for (key, val) in body {
-        if super::SKIP_KEYS.contains(&key.as_str()) || !truthy(val) {
-            continue;
-        }
-        field_rows.push_str(&format!(
-            "<tr>\
-             <td style=\"padding:10px 14px;font-weight:600;color:#555;\
-             white-space:nowrap;vertical-align:top;border-bottom:1px solid #eee;\">{}</td>\
-             <td style=\"padding:10px 14px;color:#222;border-bottom:1px solid #eee;\">{}</td>\
-             </tr>",
-            html_escape(&label(key)),
-            html_escape(&format_value(val, DEFAULT_MAX_LEN)),
-        ));
-    }
-    let name = html_escape(
-        &body
-            .get("name")
-            .map(py_str)
-            .unwrap_or_else(|| "Unknown".into()),
-    );
-    let email_raw = body.get("email").map(py_str).unwrap_or_default();
-    let email_escaped = html_escape(&email_raw);
-    let subject_detail = if name != "Unknown" {
-        format!("from {name}")
-    } else {
-        "New Submission".into()
-    };
-    let footer_name = html_escape(if sender_name.is_empty() {
-        "HookForms"
-    } else {
-        sender_name
-    });
-    let reply_button = if email_raw.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "<tr><td style=\"padding:0 32px 24px;\"><a href=\"mailto:{email_escaped}\" \
-             style=\"display:inline-block;padding:10px 20px;background:#1a1a2e;color:#fff;\
-             text-decoration:none;border-radius:5px;font-size:14px;\">Reply to {name}</a></td></tr>"
-        )
-    };
-    format!(
-        r#"<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"></head>
-<body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:32px 0;">
-    <tr><td align="center">
-      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
-        <tr>
-          <td style="background:#1a1a2e;padding:24px 32px;">
-            <h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:600;">{subject_detail}</h1>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:24px 32px;">
-            <p style="margin:0 0 16px;color:#666;font-size:14px;">A new form submission was received:</p>
-            <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #eee;border-radius:6px;overflow:hidden;">
-              {field_rows}
-            </table>
-          </td>
-        </tr>
-        {reply_button}
-        <tr>
-          <td style="padding:16px 32px;background:#fafafa;border-top:1px solid #eee;">
-            <p style="margin:0;color:#999;font-size:12px;">Delivered by {footer_name} &middot; <code style="background:#eee;padding:2px 6px;border-radius:3px;font-size:11px;">/hooks/{slug_escaped}</code></p>
-          </td>
-        </tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>"#
-    )
+/// The designed email (HTML plus plain text) for this submission.
+pub fn render(ctx: &ChannelContext) -> crate::email::render::Rendered {
+    crate::email::render::render(&ctx.slug, &subject(ctx), Some(&ctx.sender_name), &ctx.body)
 }
 
 /// Rate check plus delivery to every recipient. Returns how many sends succeeded.
@@ -205,11 +121,16 @@ pub async fn send_emails(
         tracing::warn!(inbox = %ctx.slug, "email rate limit hit (channel dispatcher)");
         return 0;
     }
-    let html = build_email_html(&ctx.slug, &ctx.body, &ctx.sender_name);
-    let subject = subject(ctx);
-    let sends = recipients
-        .iter()
-        .map(|to| mailer.send_email(to, &subject, &html, &ctx.sender_name));
+    let email = render(ctx);
+    let sends = recipients.iter().map(|to| {
+        mailer.send_email(
+            to,
+            &email.subject,
+            &email.html,
+            &email.text,
+            &ctx.sender_name,
+        )
+    });
     let mut ok = 0;
     // Python gathers the sends concurrently; these futures are polled together.
     let results = join_all(sends).await;
@@ -284,24 +205,20 @@ mod tests {
     }
 
     #[test]
-    fn subject_and_html() {
+    fn subject_and_email() {
         assert_eq!(subject(&ctx(json!({"name": "Ada"}))), "[contact] from Ada");
         assert_eq!(subject(&ctx(json!({"x": 1}))), "[contact] New Submission");
-        let html = build_email_html(
-            "con<tact>",
-            &ctx(json!({"name": "<Ada>", "email": "a@b.c", "raw": "r", "empty": "", "first_name": "A&B"})).body,
-            "Acme",
-        );
-        assert!(html.contains(r#"font-weight:600;">from &lt;Ada&gt;</h1>"#));
-        assert!(html.contains(r#"border-bottom:1px solid #eee;">First Name</td><td style="padding:10px 14px;color:#222;border-bottom:1px solid #eee;">A&amp;B</td></tr>"#));
-        assert!(!html.contains("Raw</td>"));
-        assert!(!html.contains("Empty</td>"));
-        assert!(html.contains(r#"<a href="mailto:a@b.c" style="display:inline-block;padding:10px 20px;background:#1a1a2e;color:#fff;text-decoration:none;border-radius:5px;font-size:14px;">Reply to &lt;Ada&gt;</a></td></tr>"#));
-        assert!(html.contains("Delivered by Acme &middot;"));
-        assert!(html.contains("/hooks/con&lt;tact&gt;</code>"));
-        let no_reply = build_email_html("s", json!({"a": 1}).as_object().unwrap(), "");
-        assert!(!no_reply.contains("mailto:"));
-        assert!(no_reply.contains("New Submission</h1>"));
-        assert!(no_reply.contains("Delivered by HookForms"));
+        let email = render(&ctx(
+            json!({"name": "<Ada>", "email": "a@b.c", "raw": "r", "empty": "", "first_name": "A&B"}),
+        ));
+        assert_eq!(email.subject, "[contact] from <Ada>");
+        assert!(email.html.contains(">New submission from &lt;Ada&gt;</h1>"));
+        assert!(email.html.contains(">A&amp;B</td>"));
+        assert!(!email.html.contains(">Raw</td>"));
+        assert!(!email.html.contains(">Empty</td>"));
+        assert!(email.html.contains(r#"<a href="mailto:a@b.c""#));
+        assert!(email.html.contains("Delivered by Acme."));
+        assert!(email.text.contains("First Name: A&B\n"));
+        assert!(email.text.contains("Reply to <Ada>: mailto:a@b.c"));
     }
 }

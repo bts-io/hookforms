@@ -21,13 +21,17 @@ def case(name, method, path, **kw):
 
 
 def hook(name, slug, body=None, ctype=None, method="POST", query="", out=False, **kw):
-    """Submit to /hooks/{slug} and then read the stored event back."""
+    """Submit to /hooks/{slug} and then read the stored event back.
+
+    Known differences skip the read back unless `readback=True` says the
+    stored event still matches."""
+    readback = kw.pop("readback", kw.get("known") is None)
     headers = dict(kw.pop("headers", {}))
     if ctype:
         headers["Content-Type"] = ctype
     case(name, method, f"/hooks/{slug}{query}", raw=body, headers=headers, key="none",
          save={"last_event": "event_id"}, out=out, **kw)
-    if kw.get("known") is None and not kw.get("no_readback"):
+    if readback and not kw.get("no_readback"):
         case(name + " (stored event)", "GET", f"/v1/hooks/{slug}/events/{{last_event}}",
              needs="last_event")
 
@@ -257,17 +261,18 @@ for name, ptype, cfg in [
     case(f"set {ptype} provider for {name}", "PUT", "/v1/hooks/config/email-provider", json={"inbox": name, "type": ptype, "config": cfg})
     case(f"get {ptype} provider", "GET", f"/v1/hooks/config/email-provider?inbox={name}")
     case(f"add email channel {name}", "POST", f"/v1/hooks/inboxes/{name}/channels", json={"type": "email", "config": {"recipients": ["one@example.com", "two@example.com"]}})
-    jhook(f"email via {ptype}", name, FORM, out=True)
+    jhook(f"email via {ptype}", name, FORM, out=True, known="email_bodies", readback=True)
 case("create inbox em-smtp", "POST", "/v1/hooks/inboxes", json={"slug": "em-smtp", "email_subject_prefix": "[Contact]"})
 case("add email channel em-smtp", "POST", "/v1/hooks/inboxes/em-smtp/channels", json={"type": "email", "config": {"recipients": ["to@example.com"]}})
-jhook("email via smtp", "em-smtp", FORM, out=True)
-jhook("email via smtp no name", "em-smtp", {"message": "<script>x</script>", "email": "e@example.com"}, out=True)
-jhook("email via smtp unicode", "em-smtp", {"name": "Zoë 日本", "note": "héllo"}, out=True)
+jhook("email via smtp", "em-smtp", FORM, out=True, known="email_bodies", readback=True)
+jhook("email via smtp no name", "em-smtp", {"message": "<script>x</script>", "email": "e@example.com"}, out=True,
+      known="email_bodies", readback=True)
+jhook("email via smtp unicode", "em-smtp", {"name": "Zoë 日本", "note": "héllo"}, out=True, known="email_bodies", readback=True)
 case("email rate limit (12 posts, 10 mails)", "SPECIAL", "", special="email_rate")
 case("delete inbox provider", "DELETE", "/v1/hooks/config/email-provider?inbox=em-resend")
 case("delete inbox provider again (both 204)", "DELETE", "/v1/hooks/config/email-provider?inbox=em-resend")
 case("delete provider unknown inbox 404", "DELETE", "/v1/hooks/config/email-provider?inbox=nope")
-jhook("email falls back to global smtp", "em-resend", {"name": "Fallback"}, out=True)
+jhook("email falls back to global smtp", "em-resend", {"name": "Fallback"}, out=True, known="email_bodies", readback=True)
 case("delete global provider", "DELETE", "/v1/hooks/config/email-provider")
 
 # --- request limits ----------------------------------------------------------

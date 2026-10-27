@@ -528,7 +528,16 @@ async fn private_targets_are_refused() {
     );
 }
 
-struct MockMailer(Mutex<Vec<(String, String, String, String)>>);
+#[derive(Debug, Clone)]
+struct Sent {
+    to: String,
+    subject: String,
+    html: String,
+    text: String,
+    sender: String,
+}
+
+struct MockMailer(Mutex<Vec<Sent>>);
 
 impl ChannelMailer for MockMailer {
     fn provider_type(&self) -> &str {
@@ -539,16 +548,20 @@ impl ChannelMailer for MockMailer {
         to: &'a str,
         subject: &'a str,
         html: &'a str,
+        text: &'a str,
         sender: &'a str,
     ) -> SendFuture<'a> {
         Box::pin(async move {
             if to.starts_with("bad") {
                 return Err("rejected".into());
             }
-            self.0
-                .lock()
-                .unwrap()
-                .push((to.into(), subject.into(), html.into(), sender.into()));
+            self.0.lock().unwrap().push(Sent {
+                to: to.into(),
+                subject: subject.into(),
+                html: html.into(),
+                text: text.into(),
+                sender: sender.into(),
+            });
             Ok(())
         })
     }
@@ -595,11 +608,19 @@ async fn email_channels_use_provider_and_rate_limit() {
     assert_eq!(r.emails, 3);
     {
         let sent = mailer.0.lock().unwrap();
-        let to: Vec<&str> = sent.iter().map(|s| s.0.as_str()).collect();
+        let to: Vec<&str> = sent.iter().map(|s| s.to.as_str()).collect();
         assert_eq!(to, ["a@x.io", "c@x.io", "d@x.io"]);
-        assert_eq!(sent[0].1, "[contact] from Ada");
-        assert_eq!(sent[0].3, "Acme");
-        assert!(sent[0].2.contains("Reply to Ada"));
+        assert_eq!(sent[0].subject, "[contact] from Ada");
+        assert_eq!(sent[0].sender, "Acme");
+        // Every send carries the designed HTML and its plain-text twin.
+        assert!(sent[0].html.contains("Reply to Ada</a>"));
+        assert!(sent[0].html.contains("<title>[contact] from Ada</title>"));
+        assert!(
+            sent[0]
+                .text
+                .contains("Reply to Ada: mailto:ada@example.com")
+        );
+        assert!(sent[0].text.contains("Delivered by Acme."));
     }
 
     // 10 dispatches per 10 minutes; the first one above already counted.

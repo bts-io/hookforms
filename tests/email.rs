@@ -394,6 +394,7 @@ async fn resend_request_shape() {
         "to@example.com",
         "Subj",
         "<b>x</b>",
+        "x",
         Some("Acme"),
     )
     .await
@@ -405,12 +406,20 @@ async fn resend_request_shape() {
     let body: Value = serde_json::from_str(&seen[0].body).unwrap();
     assert_eq!(
         body,
-        json!({"from": "Acme <noreply@example.com>", "to": ["to@example.com"], "subject": "Subj", "html": "<b>x</b>"})
+        json!({"from": "Acme <noreply@example.com>", "to": ["to@example.com"], "subject": "Subj",
+               "html": "<b>x</b>", "text": "x"})
     );
 
     mock.send_status.lock().unwrap().push(422);
     let err = p
-        .send(&reqwest::Client::new(), "to@example.com", "S", "h", None)
+        .send(
+            &reqwest::Client::new(),
+            "to@example.com",
+            "S",
+            "h",
+            "t",
+            None,
+        )
         .await
         .unwrap_err();
     assert!(err.starts_with("Resend send failed: 422 "), "{err}");
@@ -431,6 +440,7 @@ async fn sendgrid_request_shape() {
         "to@example.com",
         "Subj",
         "<p>h</p>",
+        "h",
         None,
     )
     .await
@@ -445,7 +455,10 @@ async fn sendgrid_request_shape() {
             "personalizations": [{"to": [{"email": "to@example.com"}]}],
             "from": {"email": "noreply@example.com", "name": "HookForms"},
             "subject": "Subj",
-            "content": [{"type": "text/html", "value": "<p>h</p>"}]
+            "content": [
+                {"type": "text/plain", "value": "h"},
+                {"type": "text/html", "value": "<p>h</p>"}
+            ]
         })
     );
 }
@@ -467,6 +480,7 @@ async fn api_providers_strip_control_characters_from_header_fields() {
             "to@example.com\r\nBcc: x@example.com",
             &format!("[x] from {evil}"),
             "<b>x</b>",
+            "x",
             Some(evil),
         )
         .await
@@ -488,6 +502,7 @@ async fn api_providers_strip_control_characters_from_header_fields() {
             "to@example.com\r\nBcc: x@example.com",
             &format!("[x] from {evil}"),
             "<p>h</p>",
+            "h",
             Some(evil),
         )
         .await
@@ -512,6 +527,70 @@ fn decode_raw(body: &str) -> String {
             .unwrap(),
     )
     .unwrap()
+}
+
+/// The parts of a `multipart/alternative` message as (content type, decoded
+/// body), in order. Handles 7bit, quoted-printable and base64 parts.
+fn mime_parts(message: &str) -> Vec<(String, String)> {
+    use base64::Engine;
+    let message = message.replace("\r\n", "\n");
+    assert!(
+        message.contains("Content-Type: multipart/alternative"),
+        "{message}"
+    );
+    let boundary = message
+        .split("boundary=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("boundary");
+    let delimiter = format!("--{boundary}");
+    let mut out = Vec::new();
+    for chunk in message.split(&delimiter).skip(1) {
+        if chunk.starts_with("--") {
+            break;
+        }
+        let (head, body) = chunk.trim_start_matches('\n').split_once("\n\n").unwrap();
+        let header = |name: &str| {
+            head.lines()
+                .find_map(|l| l.strip_prefix(name))
+                .map(|v| v.trim().to_string())
+                .unwrap_or_default()
+        };
+        let ctype = header("Content-Type:");
+        let ctype = ctype.split(';').next().unwrap().to_string();
+        let body = body.strip_suffix('\n').unwrap_or(body);
+        let decoded = match header("Content-Transfer-Encoding:").as_str() {
+            "base64" => {
+                let joined: String = body.split_whitespace().collect();
+                String::from_utf8(
+                    base64::engine::general_purpose::STANDARD
+                        .decode(joined)
+                        .unwrap(),
+                )
+                .unwrap()
+            }
+            "quoted-printable" => {
+                let joined = body.replace("=\n", "").replace('\n', "\r\n");
+                let bytes = joined.as_bytes();
+                let mut buf = Vec::new();
+                let mut i = 0;
+                while i < bytes.len() {
+                    if bytes[i] == b'=' && i + 2 < bytes.len() {
+                        let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap();
+                        buf.push(u8::from_str_radix(hex, 16).unwrap());
+                        i += 3;
+                    } else {
+                        buf.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+                String::from_utf8(buf).unwrap()
+            }
+            _ => body.to_string(),
+        };
+        out.push((ctype, decoded));
+    }
+    out
 }
 
 #[tokio::test]
@@ -540,6 +619,7 @@ async fn gmail_refreshes_expired_token_and_sends() {
         "to@example.com",
         "Hello",
         "<p>Hi</p>",
+        "Hi there",
         Some("Acme"),
     )
     .await
@@ -563,8 +643,13 @@ async fn gmail_refreshes_expired_token_and_sends() {
     assert!(mime.contains("From: Acme <me@example.com>"), "{mime}");
     assert!(mime.contains("To: to@example.com"));
     assert!(mime.contains("Subject: Hello"));
-    assert!(mime.contains("Content-Type: text/html"));
-    assert!(mime.contains("<p>Hi</p>"));
+    assert_eq!(
+        mime_parts(&mime),
+        [
+            ("text/plain".to_string(), "Hi there".to_string()),
+            ("text/html".to_string(), "<p>Hi</p>".to_string())
+        ]
+    );
 
     // The refreshed token is written back, other fields kept.
     let saved: Value = serde_json::from_str(&std::fs::read_to_string(&token).unwrap()).unwrap();
@@ -579,6 +664,7 @@ async fn gmail_refreshes_expired_token_and_sends() {
         &reqwest::Client::new(),
         "to@example.com",
         "Again",
+        "x",
         "x",
         None,
     )
@@ -606,7 +692,14 @@ async fn gmail_missing_token_file() {
         "me@example.com",
     ));
     let err = p
-        .send(&reqwest::Client::new(), "to@example.com", "S", "h", None)
+        .send(
+            &reqwest::Client::new(),
+            "to@example.com",
+            "S",
+            "h",
+            "t",
+            None,
+        )
         .await
         .unwrap_err();
     assert_eq!(
@@ -664,7 +757,8 @@ async fn smtp_server(starttls: bool) -> (u16, Arc<Mutex<Vec<Mail>>>) {
                             if l == "." {
                                 break;
                             }
-                            mail.data.push_str(&l);
+                            // Undo SMTP dot-stuffing, as a real server does.
+                            mail.data.push_str(l.strip_prefix('.').unwrap_or(&l));
                             mail.data.push('\n');
                         }
                         store.lock().unwrap().push(std::mem::take(&mut mail));
@@ -715,6 +809,7 @@ async fn smtp_plain_with_login() {
         "to@example.com",
         "Hi there",
         "<p>Body</p>",
+        "Body",
         Some("Acme"),
     )
     .await
@@ -729,14 +824,18 @@ async fn smtp_plain_with_login() {
         m.data
     );
     assert!(m.data.contains("Subject: Hi there"));
-    assert!(m.data.contains("Content-Type: text/html"));
+    assert_eq!(
+        mime_parts(&m.data),
+        [
+            ("text/plain".to_string(), "Body".to_string()),
+            ("text/html".to_string(), "<p>Body</p>".to_string())
+        ]
+    );
 }
 
-/// Python's `MIMEText(html, "html")` sends non-ASCII text as utf-8 base64 of
-/// the exact text: `\n` line endings, nothing appended.
+/// Non-ASCII parts arrive intact, each decoded from its own part.
 #[tokio::test]
-async fn smtp_non_ascii_body_is_base64_of_exact_text() {
-    use base64::Engine;
+async fn smtp_non_ascii_parts_round_trip() {
     let (port, mails) = smtp_server(false).await;
     let p = Provider::from_record(
         "smtp",
@@ -747,21 +846,66 @@ async fn smtp_non_ascii_body_is_base64_of_exact_text() {
     )
     .unwrap();
     let html = "<p>Zo\u{eb} \u{65e5}\u{672c}</p>\n<p>h\u{e9}llo</p>";
-    p.send(&reqwest::Client::new(), "to@example.com", "S", html, None)
-        .await
-        .unwrap();
+    let text = "Zo\u{eb} \u{65e5}\u{672c}\nh\u{e9}llo";
+    p.send(
+        &reqwest::Client::new(),
+        "to@example.com",
+        "S",
+        html,
+        text,
+        None,
+    )
+    .await
+    .unwrap();
     let m = mails.lock().unwrap()[0].clone();
-    assert!(
-        m.data.contains("Content-Transfer-Encoding: base64"),
-        "{}",
-        m.data
+    assert_eq!(
+        mime_parts(&m.data),
+        [
+            ("text/plain".to_string(), text.to_string()),
+            ("text/html".to_string(), html.to_string())
+        ]
     );
-    let (_, encoded) = m.data.split_once("\n\n").unwrap();
-    let encoded: String = encoded.split_whitespace().collect();
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .unwrap();
-    assert_eq!(String::from_utf8(decoded).unwrap(), html);
+}
+
+/// A full rendered notification goes out with both parts, long lines and all.
+#[tokio::test]
+async fn smtp_sends_rendered_notification_as_alternative() {
+    let (port, mails) = smtp_server(false).await;
+    let p = Provider::from_record(
+        "smtp",
+        json!({"host": "127.0.0.1", "port": port, "use_tls": false,
+               "from_email": "forms@example.com"})
+        .as_object()
+        .unwrap(),
+    )
+    .unwrap();
+    let body = json!({"name": "Sam", "email": "sam@example.com", "message": "L".repeat(1500)});
+    let r = email::render::render(
+        "contact",
+        "[contact] from Sam",
+        None,
+        body.as_object().unwrap(),
+    );
+    p.send(
+        &reqwest::Client::new(),
+        "to@example.com",
+        &r.subject,
+        &r.html,
+        &r.text,
+        None,
+    )
+    .await
+    .unwrap();
+    let m = mails.lock().unwrap()[0].clone();
+    assert!(m.data.contains("multipart/alternative"), "{}", m.data);
+    let parts = mime_parts(&m.data);
+    assert_eq!(parts.len(), 2);
+    assert_eq!(
+        parts[0],
+        ("text/plain".to_string(), r.text.replace('\n', "\r\n"))
+    );
+    assert_eq!(parts[1].0, "text/html");
+    assert_eq!(parts[1].1.replace("\r\n", "\n"), r.html);
 }
 
 #[tokio::test]
@@ -775,7 +919,14 @@ async fn smtp_tls_refuses_server_without_starttls() {
     )
     .unwrap();
     let err = p
-        .send(&reqwest::Client::new(), "to@example.com", "S", "h", None)
+        .send(
+            &reqwest::Client::new(),
+            "to@example.com",
+            "S",
+            "h",
+            "t",
+            None,
+        )
         .await
         .unwrap_err();
     assert!(err.starts_with("SMTP send failed"), "{err}");

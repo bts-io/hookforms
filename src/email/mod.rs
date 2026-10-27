@@ -3,7 +3,8 @@
 //! `routers/webhooks.py`).
 //!
 //! - `providers`: Gmail, Resend, SendGrid, SMTP senders.
-//! - `render`: subject and HTML body, byte for byte as Python renders them.
+//! - `render`: the notification email (subject, designed HTML, plain text),
+//!   shared with the email channel.
 //! - `resolve_provider`: inbox provider, then the global default, then the
 //!   env Gmail token file.
 //! - `notify`: the intake hook (step 3) for inboxes without channels.
@@ -250,6 +251,7 @@ pub async fn deliver_legacy(state: &AppState, inbox: &InboxInfo, body: &Value) -
                 to,
                 &rendered.subject,
                 &rendered.html,
+                &rendered.text,
                 inbox.sender_name.as_deref(),
             )
             .await
