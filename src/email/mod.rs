@@ -221,12 +221,8 @@ pub async fn deliver_legacy(state: &AppState, inbox: &InboxInfo, body: &Value) -
         tracing::error!(slug = %inbox.slug, "Email notification failed: body is not an object");
         return 0;
     };
-    let rendered = render::render_legacy(
-        &inbox.slug,
-        inbox.email_subject_prefix.as_deref(),
-        inbox.sender_name.as_deref(),
-        fields,
-    );
+    let rendered =
+        render::render_legacy(&inbox.slug, inbox.email_subject_prefix.as_deref(), fields);
     let provider = match resolve_provider(state, &inbox.id).await {
         Ok(Some(p)) => p,
         Ok(None) => {

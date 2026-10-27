@@ -880,12 +880,7 @@ async fn smtp_sends_rendered_notification_as_alternative() {
     )
     .unwrap();
     let body = json!({"name": "Sam", "email": "sam@example.com", "message": "L".repeat(1500)});
-    let r = email::render::render(
-        "contact",
-        "[contact] from Sam",
-        None,
-        body.as_object().unwrap(),
-    );
+    let r = email::render::render("contact", "[contact] from Sam", body.as_object().unwrap());
     p.send(
         &reqwest::Client::new(),
         "to@example.com",

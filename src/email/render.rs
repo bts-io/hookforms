@@ -24,7 +24,6 @@ const MUTED: &str = "#666666";
 const RULE: &str = "#e5e7eb";
 const TINT: &str = "#f6f7f9";
 const GOLD: &str = "#d4a843";
-const DEFAULT_SENDER: &str = "HookForms";
 const NO_FIELDS: &str = "The submission had no fields.";
 
 /// Keys never shown as fields in the email.
@@ -60,13 +59,8 @@ fn reply_address(body: &Map<String, Value>) -> Option<String> {
 }
 
 /// Build the notification email for a submission. `subject` is final (the
-/// caller adds the inbox prefix); `sender_name` is the inbox's sender name.
-pub fn render(
-    slug: &str,
-    subject: &str,
-    sender_name: Option<&str>,
-    body: &Map<String, Value>,
-) -> Rendered {
+/// caller adds the inbox prefix).
+pub fn render(slug: &str, subject: &str, body: &Map<String, Value>) -> Rendered {
     let raw = raw_only(body);
     let rows: Vec<(String, String)> = if raw.is_some() {
         Vec::new()
@@ -94,12 +88,6 @@ pub fn render(
     };
     let reason =
         format!("You get this email because the inbox /hooks/{slug} sends its submissions here.");
-    let sent_by = format!(
-        "Delivered by {}.",
-        sender_name
-            .filter(|s| !s.is_empty())
-            .unwrap_or(DEFAULT_SENDER)
-    );
     let reply_to = name.clone().or_else(|| email.clone()).unwrap_or_default();
 
     let content = if let Some(raw) = raw {
@@ -183,8 +171,7 @@ a[x-apple-data-detectors]{{color:inherit !important;text-decoration:none !import
 {button}
 </td></tr>
 <tr><td class="pad" style="padding:20px 32px 28px;border-top:1px solid {RULE};">
-<p style="margin:0 0 6px;font-family:{FONT};font-size:13px;line-height:1.5;color:{MUTED};">{reason_html}</p>
-<p style="margin:0;font-family:{FONT};font-size:13px;line-height:1.5;color:{MUTED};">{sent_by_html}</p>
+<p style="margin:0;font-family:{FONT};font-size:13px;line-height:1.5;color:{MUTED};">{reason_html}</p>
 </td></tr>
 </table>
 <!--[if mso]></td></tr></table><![endif]-->
@@ -195,7 +182,6 @@ a[x-apple-data-detectors]{{color:inherit !important;text-decoration:none !import
         preheader = html_escape(&preheader),
         headline_html = html_escape(&headline),
         reason_html = html_escape(&reason),
-        sent_by_html = html_escape(&sent_by),
     );
 
     let mut parts = vec![headline, intro.to_string()];
@@ -214,7 +200,7 @@ a[x-apple-data-detectors]{{color:inherit !important;text-decoration:none !import
     if let Some(addr) = &email {
         parts.push(format!("Reply to {reply_to}: mailto:{addr}"));
     }
-    let text = format!("{}\n\n--\n{reason}\n{sent_by}\n", parts.join("\n\n"));
+    let text = format!("{}\n\n--\n{reason}\n", parts.join("\n\n"));
 
     Rendered {
         subject: subject.to_string(),
@@ -232,19 +218,17 @@ pub fn subject_line(prefix: &str, body: &Map<String, Value>) -> String {
     }
 }
 
-/// The legacy `notify_email` email: the subject prefix defaults to `[slug]`,
-/// the footer names the inbox's sender name or HookForms.
+/// The legacy `notify_email` email: the subject prefix defaults to `[slug]`.
 pub fn render_legacy(
     slug: &str,
     subject_prefix: Option<&str>,
-    inbox_sender_name: Option<&str>,
     body: &Map<String, Value>,
 ) -> Rendered {
     let prefix = match subject_prefix {
         Some(p) if !p.is_empty() => p.to_string(),
         _ => format!("[{slug}]"),
     };
-    render(slug, &subject_line(&prefix, body), inbox_sender_name, body)
+    render(slug, &subject_line(&prefix, body), body)
 }
 
 #[cfg(test)]
@@ -270,12 +254,12 @@ mod tests {
 
     #[test]
     fn subject_lines() {
-        let r = render_legacy("contact", None, None, &obj(json!({"message": "hi"})));
+        let r = render_legacy("contact", None, &obj(json!({"message": "hi"})));
         assert_eq!(r.subject, "[contact] New Submission");
-        let r = render_legacy("c", Some("[Site]"), None, &obj(json!({"name": "Ann <A>"})));
+        let r = render_legacy("c", Some("[Site]"), &obj(json!({"name": "Ann <A>"})));
         assert_eq!(r.subject, "[Site] from Ann <A>");
         assert!(r.html.contains("<title>[Site] from Ann &lt;A&gt;</title>"));
-        let r = render_legacy("c", Some(""), None, &obj(json!({"name": null})));
+        let r = render_legacy("c", Some(""), &obj(json!({"name": null})));
         assert_eq!(r.subject, "[c] New Submission");
         assert!(r.html.contains(">New submission</h1>"));
     }
@@ -292,7 +276,7 @@ mod tests {
             "cf-turnstile-response": "t",
             "tags": ["a", "b"]
         }));
-        let r = render("contact", "[Site] from Ann <A>", Some("Acme & Co"), &body);
+        let r = render("contact", "[Site] from Ann <A>", &body);
 
         // Masthead, gold rule, headline, escaped values, line breaks kept.
         assert!(r.html.contains(">HookForms</td></tr>"));
@@ -306,7 +290,7 @@ mod tests {
         }
         assert!(r.html.contains(r#"<a href="mailto:ann@example.com""#));
         assert!(r.html.contains(">Reply to Ann &lt;A&gt;</a>"));
-        assert!(r.html.contains("Delivered by Acme &amp; Co."));
+        assert!(!r.html.contains("Delivered by"));
         assert!(r.html.contains("the inbox /hooks/contact sends"));
         assert!(!r.html.contains("<script"));
 
@@ -318,8 +302,7 @@ mod tests {
              Message: Line 1\nLine 2 & more\nTags: a, b\n\n\
              Reply to Ann <A>: mailto:ann@example.com\n\n\
              --\n\
-             You get this email because the inbox /hooks/contact sends its submissions here.\n\
-             Delivered by Acme & Co.\n"
+             You get this email because the inbox /hooks/contact sends its submissions here.\n"
         );
         // Field order follows the submission.
         assert!(r.html.find(">Name</td>").unwrap() < r.html.find(">Tags</td>").unwrap());
@@ -332,10 +315,9 @@ mod tests {
             "email": "\"><img src=x>@example.com",
             "x<y": "'quoted'"
         }));
-        let r = render("s<l>ug", "S", Some("<b>Shop</b>"), &body);
+        let r = render("s<l>ug", "S", &body);
         assert!(!r.html.contains("<script>"));
         assert!(!r.html.contains("<img"));
-        assert!(!r.html.contains("<b>Shop"));
         assert!(r.html.contains("/hooks/s&lt;l&gt;ug"));
         assert!(r.html.contains(">X&lt;Y</td>"));
         assert!(r.html.contains("&#x27;quoted&#x27;"));
@@ -343,18 +325,20 @@ mod tests {
 
     #[test]
     fn defaults_and_no_reply_button() {
-        let r = render_legacy("contact", None, None, &obj(json!({"message": "hi"})));
+        let r = render_legacy("contact", None, &obj(json!({"message": "hi"})));
         assert!(r.html.contains(">New submission</h1>"));
         assert!(r.html.contains("A new submission arrived."));
         assert!(!r.html.contains("mailto:"));
         assert!(!r.text.contains("mailto:"));
-        assert!(r.html.contains("Delivered by HookForms."));
-        assert!(r.text.ends_with("Delivered by HookForms.\n"));
+        assert!(!r.html.contains("Delivered by"));
+        assert!(r.text.ends_with(
+            "--\nYou get this email because the inbox /hooks/contact sends its submissions here.\n"
+        ));
         // Not an address: no button.
-        let r = render("s", "S", None, &obj(json!({"email": "not an address"})));
+        let r = render("s", "S", &obj(json!({"email": "not an address"})));
         assert!(!r.html.contains("mailto:"));
         // Address but no name: the button names the address.
-        let r = render("s", "S", None, &obj(json!({"email": "e@example.com"})));
+        let r = render("s", "S", &obj(json!({"email": "e@example.com"})));
         assert!(r.html.contains(">Reply to e@example.com</a>"));
         assert!(
             r.text
@@ -364,22 +348,22 @@ mod tests {
 
     #[test]
     fn raw_body_and_empty_body() {
-        let r = render("s", "S", None, &obj(json!({"raw": "plain <text>\nline 2"})));
+        let r = render("s", "S", &obj(json!({"raw": "plain <text>\nline 2"})));
         assert!(r.html.contains("A new submission was received:"));
         assert!(r.html.contains(">plain &lt;text&gt;\nline 2</pre>"));
         assert!(r.text.contains("\n\nplain <text>\nline 2\n\n--\n"));
         // `raw` next to other fields is not shown.
-        let r = render("s", "S", None, &obj(json!({"raw": "r", "a": "1"})));
+        let r = render("s", "S", &obj(json!({"raw": "r", "a": "1"})));
         assert!(!r.html.contains("<pre"));
         assert!(!r.html.contains(">Raw</td>"));
-        let r = render("s", "S", None, &Map::new());
+        let r = render("s", "S", &Map::new());
         assert!(r.html.contains("The submission had no fields."));
         assert!(r.text.contains("The submission had no fields."));
     }
 
     #[test]
     fn page_shape() {
-        let r = render("s", "S", None, &obj(json!({"a": "1"})));
+        let r = render("s", "S", &obj(json!({"a": "1"})));
         assert!(r.html.starts_with("<!DOCTYPE html>\n<html lang=\"en\""));
         assert!(r.html.ends_with("</body>\n</html>"));
         assert!(r.html.contains(r#"width="600""#));

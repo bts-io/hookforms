@@ -100,7 +100,7 @@ pub fn subject(ctx: &ChannelContext) -> String {
 
 /// The designed email (HTML plus plain text) for this submission.
 pub fn render(ctx: &ChannelContext) -> crate::email::render::Rendered {
-    crate::email::render::render(&ctx.slug, &subject(ctx), Some(&ctx.sender_name), &ctx.body)
+    crate::email::render::render(&ctx.slug, &subject(ctx), &ctx.body)
 }
 
 /// Rate check plus delivery to every recipient. Returns how many sends succeeded.
@@ -217,7 +217,7 @@ mod tests {
         assert!(!email.html.contains(">Raw</td>"));
         assert!(!email.html.contains(">Empty</td>"));
         assert!(email.html.contains(r#"<a href="mailto:a@b.c""#));
-        assert!(email.html.contains("Delivered by Acme."));
+        assert!(!email.html.contains("Delivered by"));
         assert!(email.text.contains("First Name: A&B\n"));
         assert!(email.text.contains("Reply to <Ada>: mailto:a@b.c"));
     }

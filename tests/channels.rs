@@ -620,7 +620,7 @@ async fn email_channels_use_provider_and_rate_limit() {
                 .text
                 .contains("Reply to Ada: mailto:ada@example.com")
         );
-        assert!(sent[0].text.contains("Delivered by Acme."));
+        assert!(!sent[0].text.contains("Delivered by"));
     }
 
     // 10 dispatches per 10 minutes; the first one above already counted.
