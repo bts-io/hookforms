@@ -1,0 +1,33 @@
+# Overlay on the Python version's docker-compose.yml (run.sh checks it out from the tag).
+# Project name hfcompare. The network uses 198.18.0.0/24 (benchmark range),
+# which neither app's SSRF filter blocks, so both apps can reach the mock.
+services:
+  api:
+    ports: !override
+      - "127.0.0.1:18800:8000"
+    environment:
+      - SSL_CERT_FILE=/certs/ca.pem
+    extra_hosts:
+      - "challenges.cloudflare.com:198.18.0.10"
+      - "api.resend.com:198.18.0.10"
+      - "api.sendgrid.com:198.18.0.10"
+    volumes:
+      - ${HFCOMPARE_CERTS}:/certs:ro
+    restart: "no"
+
+  mock:
+    image: python:3.14-alpine
+    command: ["python", "-u", "/mock/mock.py", "/certs/mock.pem", "/certs/mock.key"]
+    volumes:
+      - ${HFCOMPARE_MOCK}:/mock:ro
+      - ${HFCOMPARE_CERTS}:/certs:ro
+    networks:
+      default:
+        ipv4_address: 198.18.0.10
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 198.18.0.0/24
+          gateway: 198.18.0.1

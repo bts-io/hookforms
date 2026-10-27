@@ -1,61 +1,20 @@
 services:
   api:
-    build: ./api
+    image: ghcr.io/bts-io/hookforms:latest
+    # To build the image from this folder instead of pulling it, swap the line above for:
+    # build: .
     ports:
       - "127.0.0.1:8000:8000"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://hookforms:${POSTGRES_PASSWORD}@postgres:5432/hookforms
-      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - ADMIN_API_KEY=${ADMIN_API_KEY}
       - CORS_ORIGINS=${CORS_ORIGINS:-}
       - GMAIL_SENDER_EMAIL=${GMAIL_SENDER_EMAIL:-}
       - EVENT_RETENTION_DAYS=${EVENT_RETENTION_DAYS:-30}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
+      - DEBUG=${DEBUG:-false}
     volumes:
+      - hookforms-data:/data
       - ./config/gmail:/app/config/gmail
     restart: unless-stopped
-
-  worker:
-    build: ./api
-    command: arq app.worker.WorkerSettings
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://hookforms:${POSTGRES_PASSWORD}@postgres:5432/hookforms
-      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
-      - ADMIN_API_KEY=${ADMIN_API_KEY}
-      - GMAIL_SENDER_EMAIL=${GMAIL_SENDER_EMAIL:-}
-      - EVENT_RETENTION_DAYS=${EVENT_RETENTION_DAYS:-30}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    volumes:
-      - ./config/gmail:/app/config/gmail
-    restart: unless-stopped
-
-  postgres:
-    image: postgres:16-alpine
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    environment:
-      - POSTGRES_USER=hookforms
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=hookforms
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hookforms"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    command: redis-server --requirepass ${REDIS_PASSWORD}
-    volumes:
-      - redisdata:/data
 
   cloudflared:
     image: cloudflare/cloudflared:latest
@@ -68,5 +27,4 @@ services:
       - tunnel
 
 volumes:
-  pgdata:
-  redisdata:
+  hookforms-data:

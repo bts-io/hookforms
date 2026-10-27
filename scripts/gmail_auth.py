@@ -2,7 +2,7 @@
 """
 One-time OAuth2 authorization script for Gmail API.
 
-Run this locally (NOT in Docker) — it opens a browser for Google OAuth consent.
+Run this locally (NOT in Docker): it opens a browser for Google OAuth consent.
 After authorizing, it saves a refresh token to config/gmail/token.json.
 
 Usage:
@@ -51,7 +51,7 @@ def main():
     TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
     TOKEN_PATH.write_text(json.dumps(token_data, indent=2))
     print(f"\nToken saved to {TOKEN_PATH}")
-    print("You can now start HookForms — it will use this token for Gmail access.")
+    print("You can now start HookForms. It will use this token for Gmail access.")
 
 
 if __name__ == "__main__":

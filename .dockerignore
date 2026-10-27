@@ -1,0 +1,12 @@
+target
+.env
+*.db
+*.db-shm
+*.db-wal
+config
+tests
+compare
+scripts
+.github
+*.md
+logo.png
