@@ -6,7 +6,7 @@ HookForms is rewritten in Rust. It now runs as one container with a SQLite datab
 
 ### Changed
 
-- One binary and one container. The image is about 20.6 MB (0.1: 1.39 GB of images for the API, Postgres and Redis) and the service uses about 7.4 MiB of memory at idle (0.1: about 188 MiB across its four containers).
+- One binary and one container. The image is about 22.7 MB (0.1: 1.39 GB of images for the API, Postgres and Redis) and the service uses about 1.7 MiB of memory at idle (0.1: about 188 MiB across its four containers).
 - Data lives in a SQLite file (`/data/hookforms.db` in the `hookforms-data` volume). The schema is created and migrated on start, so there is no separate migration step.
 - The nightly event cleanup (03:00 UTC, `EVENT_RETENTION_DAYS`) runs inside the service. The worker container is gone.
 - Rate limit and auth lockout counters are kept in memory and reset on restart. With no Redis, the limiter no longer answers 503.
@@ -31,6 +31,7 @@ Cases where 0.1 answered 500 now get a proper answer:
 ### Other differences
 
 - `/health` reports the SQLite database instead of Postgres and Redis.
+- `/` and `/health` report version `0.2.0`.
 - Outgoing requests use the user agent `HookForms/0.2.0`.
 
 The Python version stays available at the git tag `v0.1.0-python`.

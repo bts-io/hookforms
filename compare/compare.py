@@ -36,7 +36,9 @@ KNOWN = {
     "bad_uuid_channel": "Channel id that is not a UUID: Python 500, Rust 404 (same class as bad_uuid_revoke).",
     "url_key_channels": "Discord/Slack/Teams channels configured with `url`: Python validates but "
                         "its formatter only reads webhook_url (sends to an empty URL); Rust sends to `url`.",
-    "health_checks": "Health checks: Python reports postgres and redis, Rust reports database (SQLite, no Redis), by design.",
+    "health_checks": "Health checks: Python reports postgres and redis, Rust reports database (SQLite, no Redis), "
+                     "by design. The version differs too (see version).",
+    "version": "Version: `/` and `/health` report 0.1.0 on Python and 0.2.0 on Rust.",
     "head_405": "HEAD on /hooks/{slug}: answer parity with Starlette 405 (Allow header order is hash-seeded).",
     "email_bodies": "Email bodies: emails follow the HookForms design now (designed HTML plus a plain-text "
                     "part, multipart/alternative); Python sent HTML only. Subjects, senders and recipients still match.",
@@ -334,7 +336,7 @@ def write_report(results):
     lines = [
         "# HookForms: Python vs Rust comparison",
         "",
-        f"Run: {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} UTC.Python from `{os.environ.get('HFCOMPARE_PYTHON_REF', 'v0.1.0-python')}` "
+        f"Run: {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} UTC. Python from `{os.environ.get('HFCOMPARE_PYTHON_REF', 'v0.1.0-python')}` "
         "(docker compose project `hfcompare`), "
         "Rust release binary with SQLite in a temp dir. Same ADMIN_API_KEY, same requests, same order.",
         "",
@@ -349,7 +351,7 @@ def write_report(results):
         "`x-ratelimit-remaining` is compared as zero or non-zero; a `location` keeps its path, while its scheme and "
         "host (each app's own address) become `<base>`.",
         "- Stored event `host` header and `source_ip` differ by how each app is reached (docker proxy vs direct) and are masked.",
-        "- Outbound requests: `host`, `user-agent` (python-httpx vs HookForms/0.1.0), `content-length`, `accept`, "
+        "- Outbound requests: `host`, `user-agent` (python-httpx vs HookForms/0.2.0), `content-length`, `accept`, "
         "`accept-encoding`, `connection` are dropped, and http vs https is ignored (Python reaches Turnstile, Resend and "
         "SendGrid over HTTPS through mapped hosts and a test CA, Rust over HTTP through `HOOKFORMS_TEST_UPSTREAM_BASE`). "
         "Records are sorted, because both apps send channels concurrently.",

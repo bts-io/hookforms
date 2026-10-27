@@ -30,8 +30,8 @@ HookForms is now a single Rust binary in one container, with its data in a SQLit
 | | 0.1 (Python) | 0.2 (Rust) |
 |---|---|---|
 | Containers | 4 (API, worker, Postgres, Redis) | 1 |
-| Images to download | 1.39 GB (API 908 MB, Postgres 420 MB, Redis 59 MB) | 20.6 MB |
-| Memory at idle | about 188 MiB across the four containers | about 7.4 MiB |
+| Images to download | 1.39 GB (API 908 MB, Postgres 420 MB, Redis 59 MB) | 22.7 MB |
+| Memory at idle | about 188 MiB across the four containers | about 1.7 MiB |
 | Database | Postgres | SQLite file in a volume |
 
 Coming from 0.1? See [Upgrading from the Python version](#upgrading-from-the-python-version). The Python code stays available at the git tag `v0.1.0-python`.
@@ -220,6 +220,8 @@ These steps assume the 0.1 stack runs from a clone of this repository with the d
    docker compose pull
    ```
 
+   If you build the image yourself (see [Building the image yourself](#building-the-image-yourself)), switch `image:` to `build: .` after the pull and run `docker compose build` in place of `docker compose pull`.
+
 3. Run the import. `docker compose run` joins the same network as the old Postgres container, which is still running:
 
    ```bash
@@ -228,7 +230,7 @@ These steps assume the 0.1 stack runs from a clone of this repository with the d
      --from "postgres://hookforms:${POSTGRES_PASSWORD}@postgres:5432/hookforms"
    ```
 
-   It ends with the row count of each table.
+   Compose warns about orphan containers (the old worker, Postgres and Redis) here. That is expected: step 4 removes them. The import ends with the row count of each table.
 
 4. Start the new version. `--remove-orphans` stops and removes the old worker, Postgres and Redis containers:
 
@@ -238,7 +240,7 @@ These steps assume the 0.1 stack runs from a clone of this repository with the d
    curl -H "X-API-Key: $ADMIN_API_KEY" http://127.0.0.1:8000/v1/hooks/inboxes
    ```
 
-The old `pgdata` and `redisdata` volumes are kept as a backup. Once everything looks right, remove them (`docker volume ls` shows their exact names, prefixed with the project name):
+The data now lives in the new `hookforms-data` volume, which Compose names after the folder like the others (`hookforms_hookforms-data` for a folder called `hookforms`). The old `pgdata` and `redisdata` volumes are kept as a backup. Once everything looks right, remove them (`docker volume ls` shows their exact names, prefixed with the project name):
 
 ```bash
 docker volume rm hookforms_pgdata hookforms_redisdata
@@ -259,6 +261,7 @@ The API is meant to answer as 0.1 did. These differences are on purpose, mostly 
 - Events whose body is a JSON array or a plain value are listed and returned normally (0.1 stored them but answered 500 when reading them).
 - Discord, Slack and Teams channels configured with `url` instead of `webhook_url` send to that URL (0.1 accepted the config but sent to an empty URL).
 - `/health` reports the SQLite database instead of Postgres and Redis.
+- `/` and `/health` report version `0.2.0` (0.1: `0.1.0`).
 - Rate limit and auth lockout counters are kept in memory, so they reset when the service restarts. With Redis gone there is no store that can be down, so the limiter no longer answers 503.
 - Outgoing requests use the user agent `HookForms/<version>`.
 
