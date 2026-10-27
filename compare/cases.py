@@ -38,12 +38,12 @@ def jhook(name, slug, obj, **kw):
 
 
 # --- root, health, routing -------------------------------------------------
-case("root", "GET", "/", key="none")
+case("root", "GET", "/", key="none", known="version")
 case("health", "GET", "/health", key="none", known="health_checks")
 case("HEAD root", "HEAD", "/", key="none")
 case("unknown path 404", "GET", "/nope", key="none")
 case("POST root 405", "POST", "/", key="none")
-case("CORS simple request", "GET", "/", key="none", headers={"Origin": "https://site.example"})
+case("CORS simple request", "GET", "/", key="none", headers={"Origin": "https://site.example"}, known="version")
 case("CORS preflight", "OPTIONS", "/v1/hooks/inboxes", key="none",
      headers={"Origin": "https://site.example", "Access-Control-Request-Method": "POST",
               "Access-Control-Request-Headers": "x-api-key,content-type"})

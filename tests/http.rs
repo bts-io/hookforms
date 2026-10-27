@@ -42,7 +42,7 @@ async fn health_is_ok() {
     let (status, headers, body) = send(&app, get("/health")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "healthy");
-    assert_eq!(body["version"], "0.1.0");
+    assert_eq!(body["version"], "0.2.0");
     assert_eq!(body["checks"]["database"], "ok");
     assert!(body["timestamp"].as_str().unwrap().ends_with("+00:00"));
     assert_eq!(headers["x-frame-options"], "DENY");
@@ -53,13 +53,13 @@ async fn health_is_ok() {
 }
 
 #[tokio::test]
-async fn root_matches_python() {
+async fn root_reports_name_status_version() {
     let app = app().await;
     let (status, headers, body) = send(&app, get("/")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body,
-        serde_json::json!({"name": "HookForms", "status": "ok", "version": "0.1.0"})
+        serde_json::json!({"name": "HookForms", "status": "ok", "version": "0.2.0"})
     );
     assert_eq!(headers["x-ratelimit-limit"], "100");
     assert_eq!(headers["x-ratelimit-remaining"], "99");
