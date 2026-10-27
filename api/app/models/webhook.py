@@ -1,11 +1,14 @@
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, UUIDMixin, TimestampMixin
+
+if TYPE_CHECKING:
+    from app.models.notification import NotificationChannel
 
 
 class WebhookInbox(Base, UUIDMixin, TimestampMixin):
