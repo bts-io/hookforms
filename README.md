@@ -10,7 +10,8 @@
 <p align="center">
   <a href="https://oss.hookforms.com">Docs</a> &middot;
   <a href="https://github.com/bts-io/hookforms-cloud">Cloudflare Workers version</a> &middot;
-  <a href="https://oss.hookforms.com/getting-started/self-hosted/">Quick start guide</a>
+  <a href="https://oss.hookforms.com/getting-started/self-hosted/">Quick start guide</a> &middot;
+  <a href="https://hookforms.com/?utm_source=github&utm_medium=readme-top&utm_campaign=selfhosted">Hosted version</a>
 </p>
 
 ---
