@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.2.1
+
+### Security
+
+- An inbox with a Turnstile secret now needs a valid `cf-turnstile-response` token on every request. Before, a body that parsed as JSON but was not an object with fields (an array, a string, a number, `true`, an empty object) or an empty body skipped the Turnstile check, and the submission was stored and its notifications sent. Such requests now get 400 "Missing Turnstile verification token" and nothing is stored. Thanks to Andrei Lavrenov for the report.
 
 ### Added
 

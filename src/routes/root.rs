@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use crate::state::AppState;
 
 /// Version reported by `/` and `/health`. The Python version reported "0.1.0".
-pub const API_VERSION: &str = "0.2.0";
+pub const API_VERSION: &str = "0.2.1";
 
 pub fn router() -> Router<AppState> {
     Router::new()
