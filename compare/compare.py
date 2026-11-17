@@ -38,7 +38,9 @@ KNOWN = {
                         "its formatter only reads webhook_url (sends to an empty URL); Rust sends to `url`.",
     "health_checks": "Health checks: Python reports postgres and redis, Rust reports database (SQLite, no Redis), "
                      "by design. The version differs too (see version).",
-    "version": "Version: `/` and `/health` report 0.1.0 on Python and 0.2.0 on Rust.",
+    "version": "Version: `/` and `/health` report 0.1.0 on Python and 0.2.x on Rust.",
+    "turnstile_every_request": "Turnstile: an inbox with a secret needs a token on every request. Python "
+                               "skipped the check for empty and non-object bodies and stored them; Rust answers 400.",
     "head_405": "HEAD on /hooks/{slug}: answer parity with Starlette 405 (Allow header order is hash-seeded).",
     "email_bodies": "Email bodies: emails follow the HookForms design now (designed HTML plus a plain-text "
                     "part, multipart/alternative); Python sent HTML only. Subjects, senders and recipients still match.",

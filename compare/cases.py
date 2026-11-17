@@ -173,8 +173,8 @@ jhook("turnstile good token", "ts", {"name": "x", "cf-turnstile-response": "good
 jhook("turnstile bad token 403", "ts", {"name": "x", "cf-turnstile-response": "bad-token"}, out=True, no_readback=True)
 jhook("turnstile non-JSON verify answer", "ts", {"cf-turnstile-response": "notjson-token"}, out=True, no_readback=True)
 hook("turnstile form token", "ts", b"name=y&cf-turnstile-response=good-token", "application/x-www-form-urlencoded", out=True)
-jhook("turnstile skipped for array body", "ts", ["a"], known="non_object_bodies")
-hook("turnstile skipped for empty body", "ts", b"")
+jhook("turnstile array body refused", "ts", ["a"], known="turnstile_every_request")
+hook("turnstile empty body refused", "ts", b"", known="turnstile_every_request")
 
 # --- legacy forward_url ----------------------------------------------------
 case("create inbox forward", "POST", "/v1/hooks/inboxes", json={"slug": "fwd", "forward_url": f"{MOCK}/forward"})

@@ -266,7 +266,8 @@ The API is meant to answer as 0.1 did. These differences are on purpose, mostly 
 - Events whose body is a JSON array or a plain value are listed and returned normally (0.1 stored them but answered 500 when reading them).
 - Discord, Slack and Teams channels configured with `url` instead of `webhook_url` send to that URL (0.1 accepted the config but sent to an empty URL).
 - `/health` reports the SQLite database instead of Postgres and Redis.
-- `/` and `/health` report version `0.2.0` (0.1: `0.1.0`).
+- An inbox with a Turnstile secret refuses every request without a token with 400, whatever the body (0.1 skipped the check for an empty body or one that was not a JSON object, and stored it).
+- `/` and `/health` report the current version, for example `0.2.1` (0.1: `0.1.0`).
 - Rate limit and auth lockout counters are kept in memory, so they reset when the service restarts. With Redis gone there is no store that can be down, so the limiter no longer answers 503.
 - Outgoing requests use the user agent `HookForms/<version>`.
 
