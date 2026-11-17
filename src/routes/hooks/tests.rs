@@ -262,25 +262,32 @@ async fn turnstile_checks() {
     add_inbox(&state, "t", &[("turnstile_secret", "sekret")]).await;
     let app = crate::build_app(state);
 
-    // Missing or empty token.
-    for body in [
-        r#"{"name":"A"}"#,
-        r#"{"name":"A","cf-turnstile-response":""}"#,
+    // Missing or empty token, and bodies that cannot carry one: every shape is
+    // refused before anything is stored.
+    let missing =
+        json!({"error": {"code": 400, "message": "Missing Turnstile verification token"}});
+    for (ct, body) in [
+        (Some("application/json"), r#"{"name":"A"}"#),
+        (
+            Some("application/json"),
+            r#"{"name":"A","cf-turnstile-response":""}"#,
+        ),
+        (Some("application/json"), "{}"),
+        (Some("application/json"), r#"["spam"]"#),
+        (Some("application/json"), r#""spam""#),
+        (Some("application/json"), "42"),
+        (Some("application/json"), "true"),
+        (Some("application/json"), "null"),
+        (Some("application/x-www-form-urlencoded"), r#"["spam"]"#),
+        (Some("text/plain"), r#""spam""#),
+        (Some("text/plain"), "plain text"),
+        (None, ""),
     ] {
-        let (status, b) = send(
-            &app,
-            req("POST", "/hooks/t", Some("application/json"), body),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            b,
-            json!({"error": {"code": 400, "message": "Missing Turnstile verification token"}})
-        );
+        let (status, b) = send(&app, req("POST", "/hooks/t", ct, body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{ct:?} {body}");
+        assert_eq!(b, missing, "{ct:?} {body}");
     }
-    // An empty body skips the check, as in Python.
-    let (status, _) = send(&app, req("POST", "/hooks/t", None, "")).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(stored_events(&app, "t").await["meta"]["total"], 0);
 
     let form = "name=A&cf-turnstile-response=tok&z=1";
     let ct = Some("application/x-www-form-urlencoded");
@@ -328,9 +335,9 @@ async fn turnstile_checks() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(b["error"]["message"], "Turnstile verification unavailable");
 
-    // The token is not stored; key order of the rest is kept.
+    // Only the verified form is stored. The token is not stored, and key order of the rest is kept.
     let list = stored_events(&app, "t").await;
-    assert_eq!(list["meta"]["total"], 2);
+    assert_eq!(list["meta"]["total"], 1);
     assert_eq!(
         serde_json::to_string(&list["data"][0]["body"]).unwrap(),
         r#"{"name":"A","z":"1"}"#

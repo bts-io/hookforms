@@ -187,10 +187,13 @@ async fn receive(
         })?;
     let mut parsed = body::parse(&content_type, &raw).await;
 
-    if let Some(secret) = inbox.turnstile_secret.as_deref().filter(|s| !s.is_empty())
-        && let Some(Value::Object(map)) = parsed.as_mut().filter(|b| body::truthy(b))
-    {
-        let token = map.shift_remove("cf-turnstile-response");
+    // An inbox with a secret needs a token on every request, whatever the body's shape:
+    // an empty body, an empty object, an array or a scalar has no token, so it is refused.
+    if let Some(secret) = inbox.turnstile_secret.as_deref().filter(|s| !s.is_empty()) {
+        let token = match parsed.as_mut() {
+            Some(Value::Object(map)) => map.shift_remove("cf-turnstile-response"),
+            _ => None,
+        };
         match token.filter(body::truthy) {
             None => {
                 return Err(AppError::bad_request(
