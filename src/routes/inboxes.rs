@@ -61,10 +61,10 @@ async fn list_inboxes(
     let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM webhook_inboxes")
         .fetch_one(&state.db)
         .await?;
-    let rows: Vec<Inbox> = sqlx::query_as(&format!(
+    let rows: Vec<Inbox> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {} FROM webhook_inboxes ORDER BY created_at DESC LIMIT ? OFFSET ?",
         Inbox::COLUMNS
-    ))
+    )))
     .bind(page.limit)
     .bind(page.offset)
     .fetch_all(&state.db)
@@ -151,7 +151,8 @@ async fn update_inbox(
             sql.push_str(", is_active = ?");
         }
         sql.push_str(" WHERE id = ?");
-        let mut q = sqlx::query(&sql).bind(db::now());
+        // Field names come from TEXT_FIELDS. Request values are bound below.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(db::now());
         for (_, v) in &sets {
             q = q.bind(v.clone());
         }

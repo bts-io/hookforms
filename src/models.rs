@@ -35,20 +35,20 @@ impl Inbox {
          email_subject_prefix, sender_name, turnstile_secret, is_active, created_at, updated_at";
 
     pub async fn by_slug(db: &SqlitePool, slug: &str) -> Result<Option<Inbox>, sqlx::Error> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {} FROM webhook_inboxes WHERE slug = ?",
             Self::COLUMNS
-        ))
+        )))
         .bind(slug)
         .fetch_optional(db)
         .await
     }
 
     pub async fn by_id(db: &SqlitePool, id: &str) -> Result<Option<Inbox>, sqlx::Error> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {} FROM webhook_inboxes WHERE id = ?",
             Self::COLUMNS
-        ))
+        )))
         .bind(id)
         .fetch_optional(db)
         .await

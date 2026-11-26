@@ -84,16 +84,16 @@ async fn get_provider(
     let sql_base = "SELECT id, inbox_id, type, config, is_active, created_at FROM email_providers";
     let row: Option<ProviderRow> = match &inbox_id {
         Some(id) => {
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "{sql_base} WHERE inbox_id = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 1"
-            ))
+            )))
             .bind(id)
             .fetch_optional(&state.db)
             .await?
         }
-        None => sqlx::query_as(&format!(
+        None => sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "{sql_base} WHERE inbox_id IS NULL AND is_active = 1 ORDER BY created_at DESC LIMIT 1"
-        ))
+        )))
         .fetch_optional(&state.db)
         .await?,
     };

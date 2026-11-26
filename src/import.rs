@@ -256,7 +256,7 @@ pub async fn import_into(
     let mut source_counts = Vec::new();
     for t in TABLES {
         let n: i64 = if has(t) {
-            sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {t}"))
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {t}")))
                 .fetch_one(&mut src)
                 .await
                 .map_err(ImportError::Source)?
@@ -270,7 +270,7 @@ pub async fn import_into(
     let mut tx = conn.begin().await.map_err(ImportError::Target)?;
     if has_data {
         for t in TABLES.iter().rev() {
-            sqlx::query(&format!("DELETE FROM {t}"))
+            sqlx::query(sqlx::AssertSqlSafe(format!("DELETE FROM {t}")))
                 .execute(&mut *tx)
                 .await
                 .map_err(ImportError::Target)?;
@@ -313,7 +313,7 @@ pub async fn import_into(
 async fn count_target(pool: &SqlitePool) -> Result<Vec<(&'static str, i64)>, ImportError> {
     let mut out = Vec::new();
     for t in TABLES {
-        let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {t}"))
+        let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {t}")))
             .fetch_one(pool)
             .await
             .map_err(ImportError::Target)?;
@@ -324,7 +324,8 @@ async fn count_target(pool: &SqlitePool) -> Result<Vec<(&'static str, i64)>, Imp
 
 /// Postgres expression giving a timestamp column in the stored text format.
 /// The session time zone is UTC, so `timestamptz` prints as UTC.
-fn ts(col: &str) -> String {
+/// Callers pass only fixed column names from the source schema.
+fn ts(col: &'static str) -> String {
     format!("to_char({col}, 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS {col}")
 }
 
@@ -371,7 +372,7 @@ async fn copy_inboxes(
         ts("created_at"),
         ts("updated_at")
     );
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
         .fetch_all(&mut *src)
         .await
         .map_err(ImportError::Source)?;
@@ -407,7 +408,7 @@ async fn copy_keys(src: &mut PgConnection, dst: &mut SqliteConnection) -> Result
         ts("created_at"),
         ts("updated_at")
     );
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
         .fetch_all(&mut *src)
         .await
         .map_err(ImportError::Source)?;
@@ -443,7 +444,7 @@ async fn copy_providers(
          is_active, {} FROM email_providers ORDER BY created_at, id",
         ts("created_at")
     );
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
         .fetch_all(&mut *src)
         .await
         .map_err(ImportError::Source)?;
@@ -476,7 +477,7 @@ async fn copy_channels(
          is_active, {} FROM notification_channels ORDER BY created_at, id",
         ts("created_at")
     );
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
         .fetch_all(&mut *src)
         .await
         .map_err(ImportError::Source)?;
@@ -514,7 +515,7 @@ async fn copy_events(
     );
     let mut after: Option<String> = None;
     loop {
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(after.as_deref())
             .bind(EVENT_BATCH)
             .fetch_all(&mut *src)

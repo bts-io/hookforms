@@ -75,7 +75,7 @@ fn pbkdf2(key: &str, salt: &[u8], rounds: u32) -> [u8; 32] {
 /// Python `hash_key` (passlib `pbkdf2_sha256.hash`, 16-byte salt).
 pub fn hash_key(key: &str) -> String {
     let mut salt = [0u8; 16];
-    getrandom::getrandom(&mut salt).expect("random salt");
+    getrandom::fill(&mut salt).expect("random salt");
     let digest = pbkdf2(key, &salt, PBKDF2_ROUNDS);
     format!(
         "$pbkdf2-sha256${PBKDF2_ROUNDS}${}${}",
@@ -109,7 +109,7 @@ pub fn verify_key(key: &str, key_hash: &str) -> bool {
 /// Python `generate_key`: `hf_` + `secrets.token_urlsafe(32)` (43 characters).
 pub fn generate_key() -> String {
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes).expect("random key");
+    getrandom::fill(&mut bytes).expect("random key");
     format!("hf_{}", URL_SAFE_NO_PAD.encode(bytes))
 }
 
@@ -164,14 +164,17 @@ pub async fn current_key(parts: &Parts, state: &AppState) -> Result<AuthKey, App
 
     let prefix = key_prefix(api_key);
     let cols = "SELECT id, name, key_hash, key_prefix, scopes FROM api_keys WHERE is_active = 1";
-    let mut rows: Vec<KeyRow> = sqlx::query_as(&format!("{cols} AND key_prefix = ?"))
-        .bind(&prefix)
-        .fetch_all(&state.db)
-        .await?;
-    if rows.is_empty() {
-        rows = sqlx::query_as(&format!("{cols} AND key_prefix IS NULL"))
+    let mut rows: Vec<KeyRow> =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!("{cols} AND key_prefix = ?")))
+            .bind(&prefix)
             .fetch_all(&state.db)
             .await?;
+    if rows.is_empty() {
+        rows = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "{cols} AND key_prefix IS NULL"
+        )))
+        .fetch_all(&state.db)
+        .await?;
     }
 
     // PBKDF2 is deliberately slow: keep it off the async workers.

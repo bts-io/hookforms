@@ -41,9 +41,9 @@ async fn add_inbox(state: &AppState, slug: &str, extra: &[(&str, &str)]) -> Stri
         .await
         .unwrap();
     for (col, val) in extra {
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "UPDATE webhook_inboxes SET {col} = ? WHERE id = ?"
-        ))
+        )))
         .bind(*val)
         .bind(&id)
         .execute(&state.db)

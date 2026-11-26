@@ -134,7 +134,8 @@ async fn imports_a_python_install() {
     let admin_url = std::env::var("HOOKFORMS_TEST_PG_URL").expect("HOOKFORMS_TEST_PG_URL");
     let db_name = format!("hookforms_import_{}", db::new_id().replace('-', ""));
     let mut admin = PgConnection::connect(&admin_url).await.unwrap();
-    sqlx::raw_sql(&format!("CREATE DATABASE {db_name}"))
+    // The database name is the test prefix plus a generated UUID and contains no source data.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE DATABASE {db_name}")))
         .execute(&mut admin)
         .await
         .unwrap();
@@ -143,10 +144,12 @@ async fn imports_a_python_install() {
 
     let result = run_checks(&src_url).await;
 
-    sqlx::raw_sql(&format!("DROP DATABASE {db_name} WITH (FORCE)"))
-        .execute(&mut admin)
-        .await
-        .unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "DROP DATABASE {db_name} WITH (FORCE)"
+    )))
+    .execute(&mut admin)
+    .await
+    .unwrap();
     result.unwrap();
 }
 
@@ -156,16 +159,16 @@ async fn run_checks(src_url: &str) -> Result<(), String> {
         .execute(&mut pg)
         .await
         .unwrap();
-    sqlx::raw_sql(&fixture_sql())
+    sqlx::raw_sql(sqlx::AssertSqlSafe(fixture_sql()))
         .execute(&mut pg)
         .await
         .unwrap();
-    let big_body: String = sqlx::query_scalar(&format!(
-        "SELECT body::text FROM webhook_events WHERE id = '{EV_BIG}'"
-    ))
-    .fetch_one(&mut pg)
-    .await
-    .unwrap();
+    let big_body: String =
+        sqlx::query_scalar("SELECT body::text FROM webhook_events WHERE id = $1::uuid")
+            .bind(EV_BIG)
+            .fetch_one(&mut pg)
+            .await
+            .unwrap();
     let big_body: Value = serde_json::from_str(&big_body).unwrap();
     // An extra table is reported and skipped, never read.
     sqlx::raw_sql("CREATE TABLE stray_table (x int)")

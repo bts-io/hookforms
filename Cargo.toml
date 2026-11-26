@@ -15,18 +15,18 @@ path = "src/main.rs"
 
 [dependencies]
 axum = "0.8"
-base64 = "0.22"
+base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 dotenvy = "0.15"
-getrandom = "0.2"
+getrandom = "0.4"
 lettre = { version = "0.11.19", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls", "ring", "webpki-roots", "hostname"] }
 multer = { version = "3", features = ["tokio-io"] }
-pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
+reqwest = { version = "0.13", default-features = false, features = ["form", "json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-sha2 = "0.10"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "postgres", "migrate", "macros"] }
+sha2 = "0.11"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "postgres", "migrate", "macros"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"

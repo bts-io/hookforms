@@ -168,7 +168,7 @@ async fn create_key(
     .bind(&now)
     .execute(&state.db)
     .await?;
-    let row: KeyRow = sqlx::query_as(&format!("{SELECT} WHERE id = ?"))
+    let row: KeyRow = sqlx::query_as(sqlx::AssertSqlSafe(format!("{SELECT} WHERE id = ?")))
         .bind(&id)
         .fetch_one(&state.db)
         .await?;
@@ -186,9 +186,9 @@ async fn list_keys(
     let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM api_keys")
         .fetch_one(&state.db)
         .await?;
-    let rows: Vec<KeyRow> = sqlx::query_as(&format!(
+    let rows: Vec<KeyRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{SELECT} ORDER BY created_at DESC LIMIT ? OFFSET ?"
-    ))
+    )))
     .bind(page.limit)
     .bind(page.offset)
     .fetch_all(&state.db)
